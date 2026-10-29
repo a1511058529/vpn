@@ -19,14 +19,6 @@ profile:
   store-selected: true
   store-fake-ip: true
 
-geodata-mode: false
-geo-auto-update: true
-geo-update-interval: 168
-geox-url:
-  geoip: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"
-  geosite: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-  mmdb: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
-
 # TUN 透明代理：默认关闭。软路由/网关场景在脚本菜单里打开
 tun:
   enable: __TUN_ENABLE__
