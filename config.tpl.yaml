@@ -105,6 +105,15 @@ proxy-groups:
 - {name: 🐟 漏网之鱼, type: select, proxies: ['🔰 选择节点', DIRECT]}
 
 rules:
+- DOMAIN-SUFFIX,cybersource.com,DIRECT
+- DOMAIN-SUFFIX,oraclecloud.com,DIRECT
+- DOMAIN-SUFFIX,oracle.com,DIRECT
+- DOMAIN-SUFFIX,signup.cloud.oracle.com,DIRECT
+- DOMAIN-SUFFIX,payoneer.com,DIRECT
+- DOMAIN-SUFFIX,updates.cdn-apple.com,DIRECT
+- DOMAIN-SUFFIX,quark.cn,DIRECT
+- DOMAIN-SUFFIX,appstoreconnect.apple.com,DIRECT
+- DOMAIN,appstoreconnect.apple.com,DIRECT
 - DOMAIN,app.biliapi.net,🌏 爱奇艺&哔哩哔哩
 - DOMAIN,grpc.biliapi.net,🌏 爱奇艺&哔哩哔哩
 - DOMAIN,p-bstarstatic.akamaized.net,🌏 爱奇艺&哔哩哔哩
