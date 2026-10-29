@@ -636,7 +636,6 @@ write_clash_full() {
   sed -e "s|__SUB_URL__|${sub_url}|g" \
       -e "s|__SECRET__|$(rand_hex 16)|g" \
       -e "s|__ALLOW_LAN__|false|g" \
-      -e "s|__TUN_ENABLE__|false|g" \
       -e "s|__CTRL_LISTEN__|127.0.0.1:9090|g" \
       "$tpl" > "$WWW/$SUB_TOKEN/clash"
   local out="$WWW/$SUB_TOKEN/clash" nc=0

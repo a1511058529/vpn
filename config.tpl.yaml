@@ -1,5 +1,6 @@
 # mihomo 配置模板 —— 由 mihomo.sh 安装时填充占位符，请勿手工改占位符
-# 占位符: __SUB_URL__ __SECRET__ __ALLOW_LAN__ __TUN_ENABLE__ __CTRL_LISTEN__
+# 占位符: __SUB_URL__ __SECRET__ __ALLOW_LAN__ __CTRL_LISTEN__
+# 不写 tun 段：TUN 交给客户端（Clash Verge 等）自己管理。写死网卡名会在 macOS 上和系统占用的 utun 冲突，TUN 起不来，流量全部绕过代理
 
 mixed-port: 7890
 allow-lan: __ALLOW_LAN__
@@ -18,19 +19,6 @@ external-ui: ui
 profile:
   store-selected: true
   store-fake-ip: true
-
-# TUN 透明代理：默认关闭。软路由/网关场景在脚本菜单里打开
-tun:
-  enable: __TUN_ENABLE__
-  stack: mixed
-  device: utun0
-  auto-route: true
-  auto-detect-interface: true
-  strict-route: false
-  dns-hijack:
-    - any:53
-    - tcp://any:53
-  mtu: 9000
 
 sniffer:
   enable: true
