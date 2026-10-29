@@ -10,7 +10,6 @@ ipv6: true
 unified-delay: true
 tcp-concurrent: true
 find-process-mode: off
-global-client-fingerprint: chrome
 
 external-controller: __CTRL_LISTEN__
 secret: "__SECRET__"
@@ -62,6 +61,8 @@ dns:
   ipv6: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+  # 不能写 "*"：它会让所有域名都在本机用国内 DNS 解析，造成 DNS 泄漏。
+  # 境外域名拿 fake-ip，真正的解析交给节点服务器去做。
   fake-ip-filter:
     - "+.lan"
     - "+.local"
@@ -69,12 +70,18 @@ dns:
     - "+.msftncsi.com"
     - "localhost.ptlogin2.qq.com"
   use-hosts: true
+  # 只用来解析下面 DoH 服务器的域名和节点域名，必须是 IP
   default-nameserver: ['223.5.5.5', '119.29.29.29']
-  nameserver: ['tls://223.5.5.5:853', 'tls://1.12.12.12:853']
-  fallback: ['tls://1.1.1.1:853', 'tls://8.8.8.8:853']
-  fallback-filter:
-    geoip: true
-    geoip-code: CN
+  proxy-server-nameserver: ['223.5.5.5', '119.29.29.29']
+  # 需要本机解析时走境外 DoH，且这些查询本身经由「🔰 选择节点」发出，国内 DNS 看不到
+  nameserver:
+    - 'https://1.1.1.1/dns-query#🔰 选择节点'
+    - 'https://8.8.8.8/dns-query#🔰 选择节点'
+  # 国内域名和内网域名仍用国内 DNS，保证解析到最近的 CDN
+  nameserver-policy:
+    'geosite:cn,private':
+      - 'https://223.5.5.5/dns-query'
+      - 'https://120.53.53.53/dns-query'
 
 ######### 锚点 start #######
 p: &p {interval: 3600, health-check: {enable: true, url: https://www.gstatic.com/generate_204, interval: 300}}
@@ -105,6 +112,12 @@ proxy-groups:
 - {name: 🐟 漏网之鱼, type: select, proxies: ['🔰 选择节点', DIRECT]}
 
 rules:
+# WebRTC / STUN 防泄漏：这些流量强制走代理，不让它命中后面的「国内直连」规则
+- DST-PORT,3478,🔰 选择节点
+- DST-PORT,3479,🔰 选择节点
+- DST-PORT,5349,🔰 选择节点
+- DST-PORT,19302,🔰 选择节点
+- DOMAIN-REGEX,^stun[0-9]*\.,🔰 选择节点
 - DOMAIN-SUFFIX,cybersource.com,DIRECT
 - DOMAIN-SUFFIX,oraclecloud.com,DIRECT
 - DOMAIN-SUFFIX,oracle.com,DIRECT
