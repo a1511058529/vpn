@@ -333,6 +333,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		o.Subs = []kv{
 			{"Clash 订阅（只有节点）", b + "proxies", ""},
 			{"完整 Clash 配置（规则 + 节点）", b + "clash", ""},
+			{"Shadowrocket 订阅", b + "shadowrocket", ""},
 			{"通用订阅（不含 ShadowTLS）", b + "v2ray", ""},
 		}
 	}

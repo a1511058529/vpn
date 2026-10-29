@@ -10,7 +10,8 @@
 # 装完会得到:
 #   http://VPS_IP:PORT/<token>/proxies   Clash 订阅（节点列表，配合本地规则用）
 #   http://VPS_IP:PORT/<token>/clash     完整 Clash 配置（规则 + 节点，开箱即用）
-#   http://VPS_IP:PORT/<token>/v2ray     base64 节点链接（v2rayN / Shadowrocket 等）
+#   http://VPS_IP:PORT/<token>/shadowrocket  Shadowrocket 专用订阅
+#   http://VPS_IP:PORT/<token>/v2ray     base64 节点链接（v2rayN / Nekobox 等）
 #
 # 安装后输入 vps 重新打开菜单
 #
@@ -623,6 +624,28 @@ $(vmess_link)"
   printf '%s' "$raw" | base64 | tr -d '\n' > "$WWW/$SUB_TOKEN/v2ray"
 }
 
+# Shadowrocket 订阅：链接格式与 v2rayN 不同（参考 fscarmen），且支持 ShadowTLS，6 个节点都有
+sr_b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+
+write_shadowrocket_sub() {
+  local h n raw fp
+  h="$SERVER_IP"; [ "$IS_IPV6" = 'true' ] && h="[[$SERVER_IP]]"   # base64 段里的 IPv6 要双层方括号
+  n="${NODE_NAME// /%20}"
+  raw="vless://$(sr_b64 "auto:${UUID}@${h}:${PORT_REALITY}")?remarks=${n}-reality&tls=1&peer=${SNI}&xtls=2&pbk=${REALITY_PUB}&sid=${SHORT_ID}
+vless://$(sr_b64 "auto:${UUID}@${h}:${PORT_H2}")?remarks=${n}-h2-reality&path=/&obfs=h2&tls=1&peer=${SNI}&alpn=h2&mux=1&pbk=${REALITY_PUB}&sid=${SHORT_ID}
+ss://$(sr_b64 "2022-blake3-aes-128-gcm:${SS_PASS}@${h}:${PORT_STLS}")?shadow-tls=$(sr_b64 "{\"version\":\"3\",\"host\":\"${SNI}\",\"password\":\"${STLS_PASS}\"}")#${n}-shadowtls"
+  if [ -n "$PORT_HY2" ] && [ -n "$CERT_FP" ]; then
+    # hpkp 要 AA:BB:.. 形式
+    fp=$(printf '%s' "$CERT_FP" | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')
+    raw="$raw
+hysteria2://${HY2_PASS}@$(addr):${PORT_HY2}?peer=${CERT_CN}&hpkp=${fp}&obfs=none#${n}-hysteria2
+anytls://${ANYTLS_PASS}@$(addr):${PORT_ANYTLS}?peer=${CERT_CN}&udp=1&hpkp=${fp}#${n}-anytls"
+  fi
+  [ -n "$ARGO_DOMAIN" ] && raw="$raw
+vmess://$(sr_b64 "auto:${UUID}@${CDN_HOST}:${CDN_PORT}")?remarks=${n}-vmess-ws&obfsParam=${ARGO_DOMAIN}&path=/${UUID}-vmess&obfs=websocket&alterId=0"
+  sr_b64 "$raw" > "$WWW/$SUB_TOKEN/shadowrocket"
+}
+
 write_clash_full() {
   local tpl="$SB_DIR/config.tpl.yaml"
   if [ ! -f "$tpl" ]; then
@@ -660,6 +683,7 @@ build_sub() {
   : > "$WWW/index.html"
   write_proxies_yaml
   write_v2ray_sub
+  write_shadowrocket_sub
   write_clash_full
   chmod -R 644 "$WWW"/index.html "$WWW/$SUB_TOKEN"/* 2>/dev/null
   chmod 755 "$WWW" "$WWW/$SUB_TOKEN"
@@ -830,7 +854,10 @@ show_sub() {
   green '  完整 Clash 配置（规则 + 节点，新机器直接导入）'
   echo  "    $base/clash"
   echo
-  green '  通用订阅（v2rayN / Shadowrocket / Nekobox，不含 ShadowTLS）'
+  green '  Shadowrocket 订阅（6 个节点都有）'
+  echo  "    $base/shadowrocket"
+  echo
+  green '  通用订阅（v2rayN / Nekobox 等，不含 ShadowTLS）'
   echo  "    $base/v2ray"
   echo
   cyan '════════════════ 节点链接 ════════════════'

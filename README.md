@@ -37,13 +37,14 @@ bash <(wget -qO- https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh)
 bash <(wget -qO- https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh) install
 ```
 
-## 装完得到三个地址
+## 装完得到四个地址
 
 | 地址 | 内容 | 给谁用 |
 |---|---|---|
 | `http://IP:PORT/<token>/proxies` | 6 个节点 | 填进你已有的 Clash 配置当订阅 |
 | `http://IP:PORT/<token>/clash` | 规则 + 节点，完整配置 | 新机器直接导入，开箱即用 |
-| `http://IP:PORT/<token>/v2ray` | base64 节点链接 | v2rayN / Shadowrocket / Nekobox（不含 ShadowTLS） |
+| `http://IP:PORT/<token>/shadowrocket` | Shadowrocket 专用格式 | iPhone / iPad 的 Shadowrocket（6 个节点都有） |
+| `http://IP:PORT/<token>/v2ray` | base64 节点链接 | v2rayN / Nekobox 等（不含 ShadowTLS） |
 
 ## 换掉旧机场
 

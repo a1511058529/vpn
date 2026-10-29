@@ -327,7 +327,7 @@ func TestOverview(t *testing.T) {
 		t.Errorf("应有 4 个服务: %+v", o.Services)
 	}
 	wantSub := "http://43.0.0.1:29708/" + testToken + "/"
-	if len(o.Subs) != 3 || o.Subs[0].Value != wantSub+"proxies" || o.Subs[1].Value != wantSub+"clash" || o.Subs[2].Value != wantSub+"v2ray" {
+	if len(o.Subs) != 4 || o.Subs[0].Value != wantSub+"proxies" || o.Subs[1].Value != wantSub+"clash" || o.Subs[2].Value != wantSub+"shadowrocket" || o.Subs[3].Value != wantSub+"v2ray" {
 		t.Errorf("订阅地址不对: %+v", o.Subs)
 	}
 	if len(o.Nodes) != 2 || o.Nodes[0] != "vless://node-a" || o.Nodes[1] != "vmess://node-b" {
