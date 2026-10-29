@@ -9,7 +9,7 @@
 | `-h2-reality` | VLESS + Reality + HTTP 传输 | 带多路复用 |
 | `-vmess-ws` | VMess + WebSocket，经 Cloudflare Argo 隧道 | 走 Cloudflare 线路，不暴露端口 |
 
-分流规则在 `config.tpl.yaml`（9825 条）：国内直连、国外走代理、广告拦截。
+分流规则在 `config.tpl.yaml`（约 1900 条）：国内直连、国外走代理，海外 AI 服务单独一个 `🤖 AI` 分组（可单独选节点），Cloudflare 上的国内站直连、国外站走 `🌩️ Cloudflare` 分组。没被规则列出的国外网站由最后的「🐟 漏网之鱼」兜底走代理。
 
 装好后还会同时装一个 **Web 运维面板**（`panel/`，Go 编写）：网页上查看状态、更换 SNI / 端口 / 密钥、编辑自定义规则、看日志。
 
@@ -126,7 +126,6 @@ vmess-ws 只监听 VPS 本机，由 nginx 反代，再经 `cloudflared` 的**临
 - **订阅是明文 HTTP**，靠 32 位随机 token 保护，谁拿到链接谁就能用你的节点，别外传。泄露了就跑菜单 `5)` 换一个，旧地址立刻作废。
 - 仓库里只有规则模板和脚本，**不包含任何 UUID、密钥、订阅地址**。这些在 VPS 上生成，只存在 `/etc/sing-box/.vps.env`（权限 600）。
 - 装在国内 VPS 上没有意义，这是给境外 VPS 用的。
-- 广告拦截规则可能误伤个别站点。遇到打不开的，在 Clash 面板把 `🛑 拦截广告` 策略组从 `REJECT` 切到 `DIRECT`。
 - 默认使用 systemd，脚本会自带一个独立的 nginx 实例（`sb-nginx`），并关闭发行版自带的 nginx 默认服务以免占用 80 端口。
 
 ## 文件

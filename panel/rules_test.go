@@ -17,8 +17,8 @@ func TestGroupNamesFromRealTemplate(t *testing.T) {
 	if len(got) != 12 {
 		t.Fatalf("应提取到 12 个策略组，实际 %d: %v", len(got), got)
 	}
-	want := []string{"♻️ 自动选择", "🔰 选择节点", "🌏 爱奇艺&哔哩哔哩", "📺 动画疯", "🎮 Steam 登录/下载", "🎮 Steam 商店/社区",
-		"🌩️ Cloudflare", "☁️ OneDrive", "🎓学术网站", "🇨🇳 国内网站", "🛑 拦截广告", "🐟 漏网之鱼"}
+	want := []string{"♻️ 自动选择", "🔰 选择节点", "🤖 AI", "🌏 爱奇艺&哔哩哔哩", "📺 动画疯", "🎮 Steam 登录/下载", "🎮 Steam 商店/社区",
+		"🌩️ Cloudflare", "☁️ OneDrive", "🎓学术网站", "🇨🇳 国内网站", "🐟 漏网之鱼"}
 	for i, w := range want {
 		if got[i] != w {
 			t.Errorf("第 %d 个组名 = %q，期望 %q", i, got[i], w)
