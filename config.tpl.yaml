@@ -8582,6 +8582,7 @@ rules:
 - DOMAIN-SUFFIX,sape.ru,🛑 拦截广告
 - DOMAIN-SUFFIX,scorecardresearch.com,🛑 拦截广告
 - DOMAIN-SUFFIX,segment.com,🛑 拦截广告
+- DOMAIN-SUFFIX,serving-sys.com,🛑 拦截广告
 - DOMAIN-SUFFIX,sharethis.com,🛑 拦截广告
 - DOMAIN-SUFFIX,smaato.com,🛑 拦截广告
 - DOMAIN-SUFFIX,smaato.net,🛑 拦截广告
