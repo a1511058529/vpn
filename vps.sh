@@ -14,7 +14,9 @@
 # 安装后输入 vps 重新打开菜单
 #
 
-VERSION='2.0.0'
+VERSION='2.0.1'
+ORIG_ARGS=("$@")
+
 GH_USER='a1511058529'
 GH_REPO='vpn'
 GH_BRANCH='main'
@@ -51,7 +53,22 @@ die()   { err "$*"; exit 1; }
 
 # ============ 环境 ============
 
-check_root()    { [ "$(id -u)" = '0' ] || die '需要 root 权限，请用 sudo 运行'; }
+check_root() {
+  [ "$(id -u)" = '0' ] && return 0
+  command -v sudo >/dev/null 2>&1 || die '需要 root 权限：请切换到 root，或先安装 sudo'
+  # 一键命令是 bash <(wget ...)，直接 sudo 会丢失该文件描述符，所以先把脚本落盘再提权重跑
+  local tmp; tmp=$(mktemp /tmp/vps.XXXXXX) || die '无法创建临时文件'
+  if [ -f "$0" ]; then
+    cat "$0" > "$tmp"
+  else
+    # $0 是管道（bash <(...)），已被读走一部分无法回头读，重新下载一份
+    fetch "https://raw.githubusercontent.com/$GH_USER/$GH_REPO/$GH_BRANCH/vps.sh" "$tmp" \
+      || { rm -f "$tmp"; die '提权前重新下载脚本失败，请改用：wget -O vps.sh <脚本地址> && sudo bash vps.sh'; }
+  fi
+  grep -q '^VERSION=' "$tmp" || { rm -f "$tmp"; die '脚本内容异常，已中止'; }
+  info '需要 root 权限，使用 sudo 重新执行'
+  exec sudo bash -c 'f=$1; shift; bash "$f" "$@"; rc=$?; rm -f "$f"; exit $rc' _ "$tmp" "${ORIG_ARGS[@]}"
+}
 check_systemd() { command -v systemctl >/dev/null 2>&1 || die '未检测到 systemd，本脚本仅支持 systemd 系统'; }
 
 pkg_install() {
@@ -194,8 +211,9 @@ assign_ports() {
 install_core() {
   info '获取 sing-box 最新版本号'
   local tag ver
-  tag=$(fetch "https://api.github.com/repos/$CORE_REPO/releases/latest" - \
-        | grep -m1 '"tag_name"' | cut -d'"' -f4)
+  local json
+  json=$(fetch "https://api.github.com/repos/$CORE_REPO/releases/latest" -)
+  tag=$(printf '%s\n' "$json" | grep -m1 '"tag_name"' | cut -d'"' -f4)
   [ -n "$tag" ] || die '无法获取版本号，检查网络或用 -m 指定镜像'
   ver="${tag#v}"
   info "最新版本: $tag  架构: $ARCH"
@@ -214,6 +232,7 @@ install_core() {
 
 install_cloudflared() {
   [ -x "$CLOUDFLARED" ] && return 0
+  mkdir -p "$SB_DIR"
   local arch
   case "$ARCH" in
     amd64) arch=amd64 ;; arm64) arch=arm64 ;; armv7) arch=arm ;; 386) arch=386 ;;
