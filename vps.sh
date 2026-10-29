@@ -95,20 +95,24 @@ pkg_install() {
 
 check_deps() {
   local miss=()
-  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || miss+=(curl)
+  # curl 和 jq 都装上：注册 WARP 要用（下载本身有 wget 也行）
+  command -v curl    >/dev/null 2>&1 || miss+=(curl)
+  command -v jq      >/dev/null 2>&1 || miss+=(jq)
   command -v tar     >/dev/null 2>&1 || miss+=(tar)
   command -v openssl >/dev/null 2>&1 || miss+=(openssl)
   command -v nginx   >/dev/null 2>&1 || miss+=(nginx)
   if [ ${#miss[@]} -gt 0 ]; then
     info "缺少依赖: ${miss[*]}，尝试自动安装"
-    pkg_install "${miss[@]}" || warn '自动安装失败，若后续报错请手动安装'
+    # 一起装失败（比如某个包在这个系统上不存在），就逐个装，免得一个包拖累其他包
+    if ! pkg_install "${miss[@]}"; then
+      local p; for p in "${miss[@]}"; do pkg_install "$p" || warn "自动安装 $p 失败"; done
+    fi
   fi
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die '需要 curl 或 wget，请手动安装后重试'
   command -v nginx >/dev/null 2>&1 || die '需要 nginx 来托管订阅，请手动安装后重试'
   # 发行版自带的 nginx 默认服务会占 80 端口，我们用自己的 sb-nginx，这里关掉它
   systemctl disable --now nginx >/dev/null 2>&1
   command -v qrencode >/dev/null 2>&1 || pkg_install qrencode
-  # jq 只有注册 WARP 时用到，装不上就不开 WARP
-  command -v jq >/dev/null 2>&1 || pkg_install jq
 }
 
 detect_arch() {
@@ -358,7 +362,8 @@ ensure_extras() {
   if [ "$WARP_AI" = 'on' ] && [ -z "$WARP_PRIV" ]; then
     info '注册 Cloudflare WARP（AI 流量从 WARP 出去，避开机房 IP 被拦）'
     if warp_register; then ok 'WARP 已注册'
-    else warn 'WARP 注册失败，AI 流量改走 VPS 自己的出口；以后可执行 vps warp on 重试'; WARP_AI='off'; fi
+    # 保持 on，只是没有账户：配置里不会带 WARP，下次安装 / vps warp on 自动重试
+    else warn 'WARP 注册失败，AI 流量暂走 VPS 自己的出口；下次安装或执行 vps warp on 会自动重试'; fi
   fi
 }
 
@@ -899,7 +904,8 @@ show_status() {
   echo "  服务器IP: ${SERVER_IP:-?}"
   echo "  reality : ${PORT_REALITY:-?}    shadowtls: ${PORT_STLS:-?}    h2-reality: ${PORT_H2:-?}"
   echo "  hysteria2: ${PORT_HY2:-?}/udp    anytls: ${PORT_ANYTLS:-?}"
-  echo "  DNS 偏好: ${DNS_STRATEGY:-?}    AI 走 WARP: ${WARP_AI:-off}"
+  local w="${WARP_AI:-off}"; [ "$w" = 'on' ] && [ -z "$WARP_PRIV" ] && w='on（未注册成功，暂走 VPS 出口）'
+  echo "  DNS 偏好: ${DNS_STRATEGY:-?}    AI 走 WARP: $w"
   echo "  vmess-ws: ${ARGO_DOMAIN:-（尚无 Argo 域名）}"
   echo "  订阅端口: ${SUB_PORT:-?}    伪装域名: ${SNI:-?}"
   cyan '═════════════════════════════'
@@ -1150,12 +1156,16 @@ do_warp() {
   check_root; load_env
   [ -n "$SUB_TOKEN" ] || die '尚未安装'
   case "$1" in
-    on)  WARP_AI='on' ;;
+    on)  WARP_AI='on'
+         command -v curl >/dev/null 2>&1 || pkg_install curl
+         command -v jq   >/dev/null 2>&1 || pkg_install jq ;;
     off) WARP_AI='off' ;;
     *)   die '用法: vps warp on|off' ;;
   esac
   regen_and_restart || return 1
-  [ "$WARP_AI" = 'on' ] && ok 'AI 流量已改走 WARP 出口' || ok 'AI 流量走 VPS 自己的出口'
+  if [ "$WARP_AI" = 'on' ] && [ -n "$WARP_PRIV" ]; then ok 'AI 流量已改走 WARP 出口'
+  elif [ "$WARP_AI" = 'on' ]; then warn 'WARP 仍未注册成功，AI 流量暂走 VPS 自己的出口'
+  else ok 'AI 流量走 VPS 自己的出口'; fi
 }
 
 do_update_rules() {
