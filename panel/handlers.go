@@ -323,6 +323,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		{"xtls-reality", e["PORT_REALITY"], "TCP"},
 		{"ShadowTLS", e["PORT_STLS"], "TCP"},
 		{"h2-reality", e["PORT_H2"], "TCP"},
+		{"Hysteria2", e["PORT_HY2"], "UDP"},
+		{"AnyTLS", e["PORT_ANYTLS"], "TCP"},
 		{"vmess-ws", e["PORT_VMESS"], "仅本机，经 nginx + Argo"},
 		{"订阅 / 面板入口", e["SUB_PORT"], "TCP"},
 	}

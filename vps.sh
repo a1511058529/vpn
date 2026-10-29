@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# VPS 一键部署脚本 —— 把 VPS 变成你自己的订阅（一次生成 4 个节点）
-#   xtls-reality / ShadowTLS / h2-reality / vmess-ws(Cloudflare Argo)
+# VPS 一键部署脚本 —— 把 VPS 变成你自己的订阅（一次生成 6 个节点）
+#   xtls-reality / ShadowTLS / h2-reality / vmess-ws(Cloudflare Argo) / Hysteria2 / AnyTLS
+#   服务端可选让 AI 流量（ChatGPT / Claude / Gemini 等）经 Cloudflare WARP 出去
 #
 # 用法: bash <(wget -qO- https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh)
 #   或: bash <(curl -fsSL https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh)
@@ -14,7 +15,7 @@
 # 安装后输入 vps 重新打开菜单
 #
 
-VERSION='2.2.0'
+VERSION='2.3.0'
 ORIG_ARGS=("$@")
 
 GH_USER='a1511058529'
@@ -38,12 +39,17 @@ CUSTOM_RULES="$SB_DIR/custom_rules.txt"
 PANEL_BIN="$SB_DIR/vps-panel"
 PANEL_JSON="$SB_DIR/panel.json"
 PANEL_SERVICE='/etc/systemd/system/sb-panel.service'
+CERT_DIR="$SB_DIR/cert"
 
 CORE_REPO='SagerNet/sing-box'
 GH_MIRRORS=('' 'https://ghfast.top/' 'https://gh-proxy.com/' 'https://ghproxy.net/')
 
 DEFAULT_SNI='addons.mozilla.org'
 DEFAULT_CDN_HOST='skk.moe'
+# Hysteria2 / AnyTLS 用自签证书，客户端靠证书指纹校验；CN 只是个外观
+CERT_CN='www.bing.com'
+# 服务端走 WARP 的 AI 域名（客户端的 🤖 AI 分组决定走哪个节点，这里决定节点从哪个出口出去）
+WARP_AI_DOMAINS='"anthropic.com","claude.ai","claude.com","claudeusercontent.com","clau.de","openai.com","chatgpt.com","oaistatic.com","oaiusercontent.com","sora.com","ai.com","gemini.google.com","aistudio.google.com","generativelanguage.googleapis.com","alkalimakersuite-pa.clients6.google.com","notebooklm.google.com","grok.com","x.ai","perplexity.ai"'
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -100,6 +106,8 @@ check_deps() {
   # 发行版自带的 nginx 默认服务会占 80 端口，我们用自己的 sb-nginx，这里关掉它
   systemctl disable --now nginx >/dev/null 2>&1
   command -v qrencode >/dev/null 2>&1 || pkg_install qrencode
+  # jq 只有注册 WARP 时用到，装不上就不开 WARP
+  command -v jq >/dev/null 2>&1 || pkg_install jq
 }
 
 detect_arch() {
@@ -158,6 +166,17 @@ PORT_REALITY='$PORT_REALITY'
 PORT_STLS='$PORT_STLS'
 PORT_VMESS='$PORT_VMESS'
 PORT_H2='$PORT_H2'
+PORT_HY2='$PORT_HY2'
+PORT_ANYTLS='$PORT_ANYTLS'
+HY2_PASS='$HY2_PASS'
+ANYTLS_PASS='$ANYTLS_PASS'
+CERT_FP='$CERT_FP'
+DNS_STRATEGY='$DNS_STRATEGY'
+WARP_AI='$WARP_AI'
+WARP_PRIV='$WARP_PRIV'
+WARP_PEER_PUB='$WARP_PEER_PUB'
+WARP_V6='$WARP_V6'
+WARP_RESERVED='$WARP_RESERVED'
 SUB_PORT='$SUB_PORT'
 SUB_TOKEN='$SUB_TOKEN'
 CDN_HOST='$CDN_HOST'
@@ -197,21 +216,46 @@ detect_ip() {
 # 节点地址：IPv6 需要方括号
 addr() { [ "$IS_IPV6" = 'true' ] && echo "[$SERVER_IP]" || echo "$SERVER_IP"; }
 
-# 在已用端口之外随机挑一个
+port_busy() {
+  command -v ss >/dev/null 2>&1 || return 1
+  ss -Htuln 2>/dev/null | awk '{print $5}' | grep -qE "[:.]$1\$"
+}
+
+# 在已用端口和系统已占用端口之外随机挑一个，结果放在 PICKED
+# （不能用 $(pick_port)：子 shell 里改不了 USED_PORTS，会挑到重复端口）
 pick_port() {
   local p
   while :; do
     p=$(rand_port)
     case " $USED_PORTS " in *" $p "*) continue ;; esac
-    USED_PORTS="$USED_PORTS $p"; echo "$p"; return
+    port_busy "$p" && continue
+    USED_PORTS="$USED_PORTS $p"; PICKED="$p"; return
   done
 }
 
 assign_ports() {
   USED_PORTS="${PANEL_PORT:-}"
-  PORT_REALITY=$(pick_port); PORT_STLS=$(pick_port)
-  PORT_VMESS=$(pick_port);   PORT_H2=$(pick_port)
-  SUB_PORT=$(pick_port)
+  pick_port; PORT_REALITY=$PICKED; pick_port; PORT_STLS=$PICKED
+  pick_port; PORT_VMESS=$PICKED;   pick_port; PORT_H2=$PICKED
+  pick_port; PORT_HY2=$PICKED;     pick_port; PORT_ANYTLS=$PICKED
+  pick_port; SUB_PORT=$PICKED
+}
+
+# 老版本装的机器没有新节点的端口，补上
+ensure_ports() {
+  USED_PORTS="${PANEL_PORT:-} $PORT_REALITY $PORT_STLS $PORT_VMESS $PORT_H2 $SUB_PORT $PORT_HY2 $PORT_ANYTLS"
+  [ -n "$PORT_HY2" ]    || { pick_port; PORT_HY2=$PICKED; }
+  [ -n "$PORT_ANYTLS" ] || { pick_port; PORT_ANYTLS=$PICKED; }
+}
+
+# 按服务器的 IP 栈设置 sing-box 的 DNS 解析偏好：IPv6 坏掉的机器不去连 AAAA，纯 IPv6 机器不去连 A
+detect_stack() {
+  local h4='' h6=''
+  [ -n "$(get_ip 4 'https://api.ipify.org')" ]   && h4=1
+  [ -n "$(get_ip 6 'https://api64.ipify.org')" ] && h6=1
+  if   [ -n "$h4" ] && [ -z "$h6" ]; then DNS_STRATEGY='ipv4_only'
+  elif [ -z "$h4" ] && [ -n "$h6" ]; then DNS_STRATEGY='ipv6_only'
+  else DNS_STRATEGY='prefer_ipv4'; fi
 }
 
 install_core() {
@@ -258,6 +302,8 @@ gen_keys() {
   [ -n "$SHORT_ID" ]  || SHORT_ID=$(rand_hex 8)
   [ -n "$SS_PASS" ]   || SS_PASS=$(openssl rand -base64 16)
   [ -n "$STLS_PASS" ] || STLS_PASS=$(rand_hex 12)
+  [ -n "$HY2_PASS" ]  || HY2_PASS=$(rand_hex 16)
+  [ -n "$ANYTLS_PASS" ] || ANYTLS_PASS=$(rand_hex 16)
   if [ -z "$REALITY_PRIV" ] || [ -z "$REALITY_PUB" ]; then
     local kp; kp=$("$SB_BIN" generate reality-keypair)
     REALITY_PRIV=$(echo "$kp" | awk '/PrivateKey/{print $2}')
@@ -266,12 +312,89 @@ gen_keys() {
   [ -n "$REALITY_PRIV" ] && [ -n "$REALITY_PUB" ] || die 'Reality 密钥生成失败'
 }
 
-# 四个入站：xtls-reality / ShadowTLS / vmess-ws(仅本机，经 nginx+Argo) / h2-reality
+# Hysteria2 / AnyTLS 的自签证书（有效期 100 年），客户端用 SHA256 指纹锁定它
+gen_cert() {
+  mkdir -p "$CERT_DIR"
+  if [ ! -s "$CERT_DIR/cert.pem" ] || [ ! -s "$CERT_DIR/key.pem" ]; then
+    openssl ecparam -genkey -name prime256v1 -out "$CERT_DIR/key.pem" 2>/dev/null \
+      && openssl req -new -x509 -days 36500 -key "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" -subj "/CN=$CERT_CN" 2>/dev/null \
+      || die '自签证书生成失败'
+    chmod 600 "$CERT_DIR/key.pem"
+  fi
+  CERT_FP=$(openssl x509 -in "$CERT_DIR/cert.pem" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')
+  [ -n "$CERT_FP" ] || die '读取证书指纹失败'
+}
+
+# 直接向 Cloudflare 注册一个免费 WARP 账户（不依赖第三方脚本，也不用别人共享的账户）
+warp_register() {
+  command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { warn '缺少 curl 或 jq，无法注册 WARP'; return 1; }
+  local kp priv pub resp v6 cid peer res
+  kp=$("$SB_BIN" generate wg-keypair 2>/dev/null) || return 1
+  priv=$(echo "$kp" | awk '/PrivateKey/{print $2}')
+  pub=$(echo  "$kp" | awk '/PublicKey/{print $2}')
+  [ -n "$priv" ] && [ -n "$pub" ] || return 1
+  resp=$(curl -fsS --connect-timeout 10 --max-time 20 -X POST 'https://api.cloudflareclient.com/v0a2158/reg' \
+    -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.10-2158' -H 'Content-Type: application/json' \
+    -d "{\"key\":\"$pub\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"serial_number\":\"\",\"locale\":\"en_US\"}" 2>/dev/null) || return 1
+  v6=$(printf '%s' "$resp"   | jq -r '.config.interface.addresses.v6 // empty' 2>/dev/null)
+  cid=$(printf '%s' "$resp"  | jq -r '.config.client_id // empty' 2>/dev/null)
+  peer=$(printf '%s' "$resp" | jq -r '.config.peers[0].public_key // empty' 2>/dev/null)
+  [ -n "$v6" ] && [ -n "$cid" ] || return 1
+  # client_id 解码后的 3 个字节就是 wireguard 的 reserved 字段
+  res=$(printf '%s' "$cid" | base64 -d 2>/dev/null | od -An -tu1 | awk '{$1=$1; gsub(/ /, ","); print}')
+  case "$res" in *,*,*) ;; *) return 1 ;; esac
+  WARP_PRIV="$priv"; WARP_V6="$v6"; WARP_RESERVED="$res"
+  WARP_PEER_PUB="${peer:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}"
+}
+
+# 补齐新版本需要、老安装里没有的东西：端口、密码、证书、DNS 偏好、WARP
+ensure_extras() {
+  ensure_ports
+  [ -n "$DNS_STRATEGY" ] || detect_stack
+  gen_keys
+  gen_cert
+  [ -n "$WARP_AI" ] || WARP_AI='on'
+  if [ "$WARP_AI" = 'on' ] && [ -z "$WARP_PRIV" ]; then
+    info '注册 Cloudflare WARP（AI 流量从 WARP 出去，避开机房 IP 被拦）'
+    if warp_register; then ok 'WARP 已注册'
+    else warn 'WARP 注册失败，AI 流量改走 VPS 自己的出口；以后可执行 vps warp on 重试'; WARP_AI='off'; fi
+  fi
+}
+
+# 六个入站：xtls-reality / ShadowTLS / vmess-ws(仅本机，经 nginx+Argo) / h2-reality / Hysteria2 / AnyTLS
 write_singbox_config() {
   mkdir -p "$SB_DIR"
+  local warp_ep='' warp_rule='' peer='162.159.192.1'
+  if [ "$WARP_AI" = 'on' ] && [ -n "$WARP_PRIV" ]; then
+    [ "$DNS_STRATEGY" = 'ipv6_only' ] && peer='2606:4700:d0::a29f:c001'
+    warp_ep=',
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp",
+      "mtu": 1280,
+      "address": ["172.16.0.2/32", "'"$WARP_V6"'/128"],
+      "private_key": "'"$WARP_PRIV"'",
+      "peers": [{
+        "address": "'"$peer"'",
+        "port": 2408,
+        "public_key": "'"$WARP_PEER_PUB"'",
+        "allowed_ips": ["0.0.0.0/0", "::/0"],
+        "reserved": ['"$WARP_RESERVED"']
+      }]
+    }
+  ]'
+    warp_rule=',
+      { "domain_suffix": ['"$WARP_AI_DOMAINS"'], "domain_keyword": ["openai"], "outbound": "warp" }'
+  fi
   cat > "$SB_CONF" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
+  "dns": {
+    "servers": [{ "type": "local", "tag": "local" }],
+    "strategy": "${DNS_STRATEGY:-prefer_ipv4}"
+  },
+  "ntp": { "enabled": true, "server": "time.apple.com", "server_port": 123, "interval": "30m" },
   "inbounds": [
     {
       "type": "vless",
@@ -342,11 +465,43 @@ write_singbox_config() {
       },
       "transport": { "type": "http" },
       "multiplex": { "enabled": true, "padding": true }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2",
+      "listen": "::",
+      "listen_port": $PORT_HY2,
+      "users": [{ "password": "$HY2_PASS" }],
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "$CERT_DIR/cert.pem",
+        "key_path": "$CERT_DIR/key.pem"
+      }
+    },
+    {
+      "type": "anytls",
+      "tag": "anytls",
+      "listen": "::",
+      "listen_port": $PORT_ANYTLS,
+      "users": [{ "password": "$ANYTLS_PASS" }],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "$CERT_DIR/cert.pem",
+        "key_path": "$CERT_DIR/key.pem"
+      }
     }
   ],
   "outbounds": [
     { "type": "direct", "tag": "direct" }
-  ]
+  ]${warp_ep},
+  "route": {
+    "default_domain_resolver": "local",
+    "rules": [
+      { "action": "sniff" }${warp_rule}
+    ],
+    "final": "direct"
+  }
 }
 EOF
   chmod 600 "$SB_CONF"
@@ -412,6 +567,14 @@ EOF
 
 # ============ 订阅产出 ============
 
+hy2_link() {
+  echo "hysteria2://${HY2_PASS}@$(addr):${PORT_HY2}?sni=${CERT_CN}&alpn=h3&insecure=1&pinSHA256=${CERT_FP}#${NODE_NAME}-hysteria2"
+}
+
+anytls_link() {
+  echo "anytls://${ANYTLS_PASS}@$(addr):${PORT_ANYTLS}?sni=${CERT_CN}&insecure=1#${NODE_NAME}-anytls"
+}
+
 reality_link() {
   echo "vless://${UUID}@$(addr):${PORT_REALITY}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${REALITY_PUB}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}-reality"
 }
@@ -429,13 +592,19 @@ vmess_link() {
 
 SMUX="smux: { enabled: true, protocol: 'h2mux', padding: true, max-connections: '8', min-streams: '16', statistic: true, only-tcp: false }"
 
+# server 写成带引号的原始地址：IPv6 带方括号在 YAML 里会被当成列表
 write_proxies_yaml() {
-  local f="$WWW/$SUB_TOKEN/proxies" a; a=$(addr)
+  local f="$WWW/$SUB_TOKEN/proxies" a="\"$SERVER_IP\""
   {
     echo 'proxies:'
     echo "  - {name: \"$NODE_NAME-reality\", type: vless, server: $a, port: $PORT_REALITY, uuid: $UUID, network: tcp, udp: true, tls: true, flow: xtls-rprx-vision, servername: $SNI, client-fingerprint: chrome, reality-opts: {public-key: $REALITY_PUB, short-id: \"$SHORT_ID\"}}"
     echo "  - {name: \"$NODE_NAME-shadowtls\", type: ss, server: $a, port: $PORT_STLS, cipher: 2022-blake3-aes-128-gcm, password: \"$SS_PASS\", plugin: shadow-tls, client-fingerprint: chrome, plugin-opts: {host: $SNI, password: \"$STLS_PASS\", version: 3}, $SMUX}"
     echo "  - {name: \"$NODE_NAME-h2-reality\", type: vless, server: $a, port: $PORT_H2, uuid: $UUID, network: http, tls: true, servername: $SNI, client-fingerprint: chrome, reality-opts: {public-key: $REALITY_PUB, short-id: \"$SHORT_ID\"}, $SMUX}"
+    # 老版本升级上来、还没执行过 vps restart 等重新生成配置的动作时，没有这两个节点
+    if [ -n "$PORT_HY2" ] && [ -n "$CERT_FP" ]; then
+    echo "  - {name: \"$NODE_NAME-hysteria2\", type: hysteria2, server: $a, port: $PORT_HY2, password: \"$HY2_PASS\", sni: $CERT_CN, alpn: [h3], skip-cert-verify: true, fingerprint: $CERT_FP}"
+    echo "  - {name: \"$NODE_NAME-anytls\", type: anytls, server: $a, port: $PORT_ANYTLS, password: \"$ANYTLS_PASS\", udp: true, sni: $CERT_CN, client-fingerprint: chrome, skip-cert-verify: true, fingerprint: $CERT_FP}"
+    fi
     if [ -n "$ARGO_DOMAIN" ]; then
       echo "  - {name: \"$NODE_NAME-vmess-ws\", type: vmess, server: $CDN_HOST, port: $CDN_PORT, uuid: $UUID, udp: true, tls: false, alterId: 0, cipher: auto, network: ws, ws-opts: { path: \"/$UUID-vmess\", headers: {Host: $ARGO_DOMAIN} }, $SMUX}"
     fi
@@ -446,6 +615,9 @@ write_v2ray_sub() {
   # ShadowTLS 没有通用链接格式，/v2ray 里不含它，请用 /proxies 或 /clash
   local raw; raw="$(reality_link)
 $(h2_link)"
+  [ -n "$PORT_HY2" ] && [ -n "$CERT_FP" ] && raw="$raw
+$(hy2_link)
+$(anytls_link)"
   [ -n "$ARGO_DOMAIN" ] && raw="$raw
 $(vmess_link)"
   printf '%s' "$raw" | base64 | tr -d '\n' > "$WWW/$SUB_TOKEN/v2ray"
@@ -598,15 +770,27 @@ EOF
 }
 
 open_firewall() {
-  local ports=("$PORT_REALITY" "$PORT_STLS" "$PORT_H2" "$SUB_PORT")
+  local ports=("$PORT_REALITY" "$PORT_STLS" "$PORT_H2" "$PORT_ANYTLS" "$SUB_PORT")
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
-    for p in "${ports[@]}"; do ufw allow "$p" >/dev/null 2>&1; done
+    for p in "${ports[@]}" "$PORT_HY2"; do ufw allow "$p" >/dev/null 2>&1; done   # 不写协议 = TCP 和 UDP 都放
     ok 'ufw 端口已放行'
   elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     for p in "${ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null 2>&1; done
+    firewall-cmd --permanent --add-port="$PORT_HY2/udp" >/dev/null 2>&1
     firewall-cmd --reload >/dev/null 2>&1
     ok 'firewalld 端口已放行'
   fi
+}
+
+# 写配置并校验；带 WARP 校验不过（比如内核太老）就关掉 WARP 再试一次，不让它拖累节点
+write_and_check() {
+  write_singbox_config
+  validate && return 0
+  [ "$WARP_AI" = 'on' ] || return 1
+  warn '带 WARP 的配置未通过校验，已关闭 WARP（AI 改走 VPS 自己的出口）后重试'
+  WARP_AI='off'; save_env
+  write_singbox_config
+  validate
 }
 
 restart_all() {
@@ -655,7 +839,14 @@ show_sub() {
   echo "  $(reality_link)"
   echo
   echo "  $(h2_link)"
+  echo
+  echo "  $(hy2_link)"
+  echo
+  echo "  $(anytls_link)"
   [ -n "$ARGO_DOMAIN" ] && { echo; echo "  $(vmess_link)"; }
+  echo
+  yellow "  云服务器的「安全组 / 防火墙」要放行：TCP $PORT_REALITY,$PORT_STLS,$PORT_H2,$PORT_ANYTLS,$SUB_PORT  UDP $PORT_HY2"
+  yellow '  （脚本只能开系统里的 ufw / firewalld，云厂商网页控制台里的安全组需要你自己去放行，否则节点连不上）'
   echo
   if [ -z "$NO_QR" ] && command -v qrencode >/dev/null 2>&1; then
     cyan '──────────── xtls-reality 二维码 ────────────'
@@ -681,6 +872,8 @@ show_status() {
   done
   echo "  服务器IP: ${SERVER_IP:-?}"
   echo "  reality : ${PORT_REALITY:-?}    shadowtls: ${PORT_STLS:-?}    h2-reality: ${PORT_H2:-?}"
+  echo "  hysteria2: ${PORT_HY2:-?}/udp    anytls: ${PORT_ANYTLS:-?}"
+  echo "  DNS 偏好: ${DNS_STRATEGY:-?}    AI 走 WARP: ${WARP_AI:-off}"
   echo "  vmess-ws: ${ARGO_DOMAIN:-（尚无 Argo 域名）}"
   echo "  订阅端口: ${SUB_PORT:-?}    伪装域名: ${SNI:-?}"
   cyan '═════════════════════════════'
@@ -708,10 +901,9 @@ do_install() {
 
   install_core
   install_cloudflared
-  gen_keys
+  ensure_extras
   save_env
-  write_singbox_config
-  validate || die '配置有误，已中止'
+  write_and_check || die '配置有误，已中止'
   write_nginx_conf
   build_sub
   install_services
@@ -741,8 +933,8 @@ do_install() {
 }
 
 regen_and_restart() {
-  write_singbox_config
-  validate || return 1
+  ensure_extras; save_env
+  write_and_check || return 1
   write_nginx_conf
   build_sub
   open_firewall
@@ -785,7 +977,7 @@ do_change_port() {
 do_reset_keys() {
   check_root; load_env
   [ -n "$SUB_TOKEN" ] || die '尚未安装'
-  UUID=''; REALITY_PRIV=''; REALITY_PUB=''; SHORT_ID=''; SS_PASS=''; STLS_PASS=''
+  UUID=''; REALITY_PRIV=''; REALITY_PUB=''; SHORT_ID=''; SS_PASS=''; STLS_PASS=''; HY2_PASS=''; ANYTLS_PASS=''
   gen_keys; save_env
   regen_and_restart && { fetch_argo_domain && save_env && build_sub >/dev/null; ok '密钥已重置'; }
 }
@@ -848,8 +1040,8 @@ install_panel() {
   mv -f "$tmp" "$PANEL_BIN"
 
   if [ -z "$PANEL_PORT" ] || [ -z "$PANEL_PATH" ]; then
-    USED_PORTS="$PORT_REALITY $PORT_STLS $PORT_VMESS $PORT_H2 $SUB_PORT"
-    [ -n "$PANEL_PORT" ] || PANEL_PORT=$(pick_port)   # 只绑本机，不放行防火墙
+    USED_PORTS="$PORT_REALITY $PORT_STLS $PORT_VMESS $PORT_H2 $PORT_HY2 $PORT_ANYTLS $SUB_PORT"
+    [ -n "$PANEL_PORT" ] || { pick_port; PANEL_PORT=$PICKED; }   # 只绑本机，不放行防火墙
     [ -n "$PANEL_PATH" ] || PANEL_PATH=$(rand_hex 8)
     save_env
   fi
@@ -927,6 +1119,19 @@ do_update_core() {
   validate && restart_all && ok '内核已更新并重启'
 }
 
+# AI 流量是否经 WARP 出去（vps warp on|off）
+do_warp() {
+  check_root; load_env
+  [ -n "$SUB_TOKEN" ] || die '尚未安装'
+  case "$1" in
+    on)  WARP_AI='on' ;;
+    off) WARP_AI='off' ;;
+    *)   die '用法: vps warp on|off' ;;
+  esac
+  regen_and_restart || return 1
+  [ "$WARP_AI" = 'on' ] && ok 'AI 流量已改走 WARP 出口' || ok 'AI 流量走 VPS 自己的出口'
+}
+
 do_update_rules() {
   check_root; load_env
   [ -n "$SUB_TOKEN" ] || die '尚未安装'
@@ -990,6 +1195,7 @@ menu() {
     echo '  13) 卸载'
     echo '  14) 面板信息 / 安装更新面板'
     echo '  15) 重置面板密码'
+    echo '  16) AI 走 WARP 出口：开 / 关'
     echo '   0) 退出'
     cyan '══════════════════════════════════════'
     echo -n '请选择 > '
@@ -1016,6 +1222,8 @@ menu() {
       14) load_env; [ -n "$PANEL_PATH" ] && do_panel; echo -n '安装 / 更新面板？[y/N] '; read -r a
           case "$a" in y|Y) do_panel_install ;; esac ;;
       15) do_panel_passwd ;;
+      16) load_env; echo "当前: ${WARP_AI:-off}"; echo -n '1)开启 2)关闭 > '; read -r s
+          case "$s" in 1) do_warp on ;; 2) do_warp off ;; esac ;;
       0)  exit 0 ;;
       *)  warn '无效选择' ;;
     esac
@@ -1032,12 +1240,12 @@ while [ $# -gt 0 ]; do
     -n|--name)    NODE_NAME="$2"; shift 2 ;;
     -c|--cdn)     CDN_HOST="$2"; shift 2 ;;
     -m|--mirror)  GH_MIRRORS=("$2" "${GH_MIRRORS[@]}"); shift 2 ;;
-    set-sni)      ACTION=set-sni; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    set-sni|warp) ACTION="$1"; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     install|sub|status|log|update|rules|resync|uninstall|reroll-ports|reset-keys|reset-token|refresh-argo|rebuild|restart|bbr|panel|panel-install|panel-passwd) ACTION="$1"; shift ;;
     -h|--help)
       cat <<EOF
-VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
-  xtls-reality / ShadowTLS / h2-reality / vmess-ws(Argo)
+VPS 一键订阅脚本 v$VERSION —— 一次生成 6 个节点：
+  xtls-reality / ShadowTLS / h2-reality / vmess-ws(Argo) / Hysteria2 / AnyTLS
 
   bash <(wget -qO- https://raw.githubusercontent.com/$GH_USER/$GH_REPO/$GH_BRANCH/vps.sh) [动作] [选项]
 
@@ -1060,6 +1268,7 @@ VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
   panel       显示 Web 面板地址
   panel-install 安装或更新 Web 面板（已装节点的老机器用它补装）
   panel-passwd  重置面板密码
+  warp on|off AI 流量（ChatGPT / Claude / Gemini 等）是否经 Cloudflare WARP 出去
   uninstall   卸载
 
 选项:
@@ -1094,5 +1303,6 @@ case "$ACTION" in
   panel)         do_panel ;;
   panel-install) do_panel_install ;;
   panel-passwd)  do_panel_passwd ;;
+  warp)          do_warp "$ACTION_ARG" ;;
   '')        menu ;;
 esac

@@ -1,6 +1,6 @@
 # vpn
 
-把一台 VPS 一键变成你自己的订阅，一次生成 4 个节点。
+把一台 VPS 一键变成你自己的订阅，一次生成 6 个节点。
 
 | 节点 | 协议 | 说明 |
 |---|---|---|
@@ -8,6 +8,14 @@
 | `-shadowtls` | ShadowTLS v3 + SS2022 | 伪装成正常 TLS |
 | `-h2-reality` | VLESS + Reality + HTTP 传输 | 带多路复用 |
 | `-vmess-ws` | VMess + WebSocket，经 Cloudflare Argo 隧道 | 走 Cloudflare 线路，不暴露端口 |
+| `-hysteria2` | Hysteria2（UDP / QUIC） | 丢包多的线路、晚高峰通常最快 |
+| `-anytls` | AnyTLS | 较新的 TCP 协议，抗流量特征识别 |
+
+Hysteria2 和 AnyTLS 用自签证书，客户端靠证书 SHA256 指纹锁定，不怕中间人。
+
+服务端还做了几件事：按服务器的 IP 栈设置 DNS 偏好（坏掉的 IPv6 不会拖慢访问）、sing-box 自带 NTP 校时（Reality 对时间敏感）、流量嗅探，以及可选的 **AI 走 WARP**：ChatGPT / Claude / Gemini 等 AI 流量从 Cloudflare WARP 出去，避开机房 IP 被拦。安装时自动向 Cloudflare 注册免费 WARP 账户，注册失败就自动关掉，不影响节点；`vps warp on|off` 随时开关。
+
+> **装完一定要去云厂商控制台放行端口。** 脚本只能开系统里的 ufw / firewalld，腾讯云、阿里云、甲骨文等的「安全组」默认只放 22/80/443，不放行的话节点全部连不上（只有走 Argo 的 vmess-ws 能用）。需要放行的端口在安装结束和 `vps sub` 时会打印出来：几个 TCP 端口 + Hysteria2 的 UDP 端口。
 
 分流规则在 `config.tpl.yaml`（约 1900 条）：国内直连、国外走代理，海外 AI 服务单独一个 `🤖 AI` 分组（可单独选节点），Cloudflare 上的国内站直连、国外站走 `🌩️ Cloudflare` 分组。没被规则列出的国外网站由最后的「🐟 漏网之鱼」兜底走代理。
 
@@ -33,7 +41,7 @@ bash <(wget -qO- https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh) 
 
 | 地址 | 内容 | 给谁用 |
 |---|---|---|
-| `http://IP:PORT/<token>/proxies` | 4 个节点 | 填进你已有的 Clash 配置当订阅 |
+| `http://IP:PORT/<token>/proxies` | 6 个节点 | 填进你已有的 Clash 配置当订阅 |
 | `http://IP:PORT/<token>/clash` | 规则 + 节点，完整配置 | 新机器直接导入，开箱即用 |
 | `http://IP:PORT/<token>/v2ray` | base64 节点链接 | v2rayN / Shadowrocket / Nekobox（不含 ShadowTLS） |
 
@@ -60,6 +68,7 @@ proxy-providers:
  6) 刷新 Argo 域名（vmess-ws）  13) 卸载
  7) 更新 sing-box 内核          14) 面板信息 / 安装更新面板
                                 15) 重置面板密码
+                                16) AI 走 WARP 出口：开 / 关
 ```
 
 ## Web 面板
@@ -111,6 +120,7 @@ vps panel-passwd   # 重置密码（所有已登录的会话立即失效）
 vps set-sni <域名>   vps reroll-ports   vps reset-keys   vps reset-token
 vps refresh-argo     vps rebuild        vps restart      vps bbr
 vps rules            vps update         vps panel        vps panel-install   vps panel-passwd
+vps warp on|off
 ```
 
 ## 关于 vmess-ws 和 Argo
@@ -119,7 +129,11 @@ vmess-ws 只监听 VPS 本机，由 nginx 反代，再经 `cloudflared` 的**临
 
 - 临时隧道的域名（`xxx.trycloudflare.com`）**每次隧道重启都会变**。脚本已让 `sb-argo` 服务启动后自动取新域名并刷新订阅，客户端更新一下订阅即可。
 - 手动刷新：菜单 `6)`，或 `vps resync`。
-- 这条线路依赖 Cloudflare 和 CDN 接入域名可用；它挂了不影响另外 3 个节点。
+- 这条线路依赖 Cloudflare 和 CDN 接入域名可用；它挂了不影响另外 5 个节点。
+
+## 从旧版本升级
+
+老机器重新跑一遍一键安装命令（或 `vps` → `1)`）即可补上新节点。已有的 UUID、密钥、端口和订阅地址都保留，只新增 Hysteria2 / AnyTLS 两个端口（记得去安全组放行）。客户端刷新订阅即可。
 
 ## 注意
 
