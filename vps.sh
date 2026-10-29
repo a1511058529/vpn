@@ -1304,5 +1304,5 @@ case "$ACTION" in
   panel-install) do_panel_install ;;
   panel-passwd)  do_panel_passwd ;;
   warp)          do_warp "$ACTION_ARG" ;;
-  '')        menu ;;
+  '')        check_root; menu ;;   # 先提权再显示菜单，免得选完又因提权重跑一遍菜单
 esac
