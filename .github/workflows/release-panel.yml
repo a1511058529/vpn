@@ -1,0 +1,54 @@
+name: release-panel
+
+# 推送形如 panel-v0.1.0 的 tag 时，编译 5 个架构的面板二进制并发布到 GitHub Release。
+# 产物命名 vps-panel-linux-{amd64,arm64,armv7,386,s390x}，与 vps.sh 里 detect_arch 的 $ARCH 一致。
+on:
+  push:
+    tags: ['panel-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: panel/go.mod
+          cache-dependency-path: panel/go.sum
+
+      - name: 检查与测试
+        working-directory: panel
+        run: |
+          gofmt -l . | tee /dev/stderr | (! grep .)
+          go vet ./...
+          go test ./...
+
+      - name: 编译
+        working-directory: panel
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          build() {  # 产物名后缀  GOARCH  GOARM
+            CGO_ENABLED=0 GOOS=linux GOARCH="$2" GOARM="$3" \
+              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "../dist/vps-panel-linux-$1" .
+          }
+          build amd64 amd64 ""
+          build arm64 arm64 ""
+          build armv7 arm   7
+          build 386   386   ""
+          build s390x s390x ""
+          (cd ../dist && sha256sum vps-panel-linux-* > SHA256SUMS)
+          ls -l ../dist
+
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "vps-panel 二进制（linux: amd64 / arm64 / armv7 / 386 / s390x）。由 vps.sh 的 panel-install 自动下载，一般无需手动使用。"
