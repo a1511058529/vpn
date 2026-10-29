@@ -10,15 +10,12 @@ log-level: info
 ipv6: true
 unified-delay: true
 tcp-concurrent: true
-find-process-mode: off
 
 external-controller: __CTRL_LISTEN__
 secret: "__SECRET__"
-external-ui: ui
 
 profile:
   store-selected: true
-  store-fake-ip: true
 
 sniffer:
   enable: true
@@ -72,7 +69,6 @@ proxy-providers:
   Sub:
     <<: *p
     type: http
-    path: ./providers/sub.yaml
     url: "__SUB_URL__"
 
 proxies:

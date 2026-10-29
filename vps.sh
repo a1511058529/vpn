@@ -602,8 +602,8 @@ write_proxies_yaml() {
     echo "  - {name: \"$NODE_NAME-h2-reality\", type: vless, server: $a, port: $PORT_H2, uuid: $UUID, network: http, tls: true, servername: $SNI, client-fingerprint: chrome, reality-opts: {public-key: $REALITY_PUB, short-id: \"$SHORT_ID\"}, $SMUX}"
     # 老版本升级上来、还没执行过 vps restart 等重新生成配置的动作时，没有这两个节点
     if [ -n "$PORT_HY2" ] && [ -n "$CERT_FP" ]; then
-    echo "  - {name: \"$NODE_NAME-hysteria2\", type: hysteria2, server: $a, port: $PORT_HY2, password: \"$HY2_PASS\", sni: $CERT_CN, alpn: [h3], skip-cert-verify: true, fingerprint: $CERT_FP}"
-    echo "  - {name: \"$NODE_NAME-anytls\", type: anytls, server: $a, port: $PORT_ANYTLS, password: \"$ANYTLS_PASS\", udp: true, sni: $CERT_CN, client-fingerprint: chrome, skip-cert-verify: true, fingerprint: $CERT_FP}"
+    echo "  - {name: \"$NODE_NAME-hysteria2\", type: hysteria2, server: $a, port: $PORT_HY2, password: \"$HY2_PASS\", sni: $CERT_CN, alpn: [h3], skip-cert-verify: false, fingerprint: $CERT_FP}"
+    echo "  - {name: \"$NODE_NAME-anytls\", type: anytls, server: $a, port: $PORT_ANYTLS, password: \"$ANYTLS_PASS\", udp: true, idle-session-check-interval: 30, idle-session-timeout: 30, sni: $CERT_CN, client-fingerprint: chrome, skip-cert-verify: false, fingerprint: $CERT_FP}"
     fi
     if [ -n "$ARGO_DOMAIN" ]; then
       echo "  - {name: \"$NODE_NAME-vmess-ws\", type: vmess, server: $CDN_HOST, port: $CDN_PORT, uuid: $UUID, udp: true, tls: false, alterId: 0, cipher: auto, network: ws, ws-opts: { path: \"/$UUID-vmess\", headers: {Host: $ARGO_DOMAIN} }, $SMUX}"
