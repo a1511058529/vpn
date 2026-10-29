@@ -14,7 +14,7 @@
 # 安装后输入 vps 重新打开菜单
 #
 
-VERSION='2.0.1'
+VERSION='2.1.0'
 ORIG_ARGS=("$@")
 
 GH_USER='a1511058529'
@@ -34,6 +34,7 @@ CLOUDFLARED="$SB_DIR/cloudflared"
 ARGO_METRICS='127.0.0.1:20241'
 NGINX_SERVICE='/etc/systemd/system/sb-nginx.service'
 ARGO_SERVICE='/etc/systemd/system/sb-argo.service'
+CUSTOM_RULES="$SB_DIR/custom_rules.txt"
 
 CORE_REPO='SagerNet/sing-box'
 GH_MIRRORS=('' 'https://ghfast.top/' 'https://gh-proxy.com/' 'https://ghproxy.net/')
@@ -202,7 +203,7 @@ pick_port() {
 }
 
 assign_ports() {
-  USED_PORTS=''
+  USED_PORTS="${PANEL_PORT:-}"
   PORT_REALITY=$(pick_port); PORT_STLS=$(pick_port)
   PORT_VMESS=$(pick_port);   PORT_H2=$(pick_port)
   SUB_PORT=$(pick_port)
@@ -440,7 +441,21 @@ write_clash_full() {
       -e "s|__TUN_ENABLE__|false|g" \
       -e "s|__CTRL_LISTEN__|127.0.0.1:9090|g" \
       "$tpl" > "$WWW/$SUB_TOKEN/clash"
-  ok "完整配置已生成（$(sed -n '/^rules:/,$p' "$WWW/$SUB_TOKEN/clash" | grep -c '^- ') 条规则）"
+  local out="$WWW/$SUB_TOKEN/clash" nc=0
+  if [ -s "$CUSTOM_RULES" ]; then
+    awk -v f="$CUSTOM_RULES" '
+      { print }
+      /^rules:/ && !done {
+        while ((getline l < f) > 0) {
+          sub(/\r$/, "", l); sub(/^[[:space:]]+/, "", l)
+          if (l ~ /^(#|$)/) continue
+          print "- " l
+        }
+        close(f); done = 1
+      }' "$out" > "$out.tmp" && mv -f "$out.tmp" "$out"
+    nc=$(grep -cvE '^[[:space:]]*(#|$)' "$CUSTOM_RULES")
+  fi
+  ok "完整配置已生成（$(sed -n '/^rules:/,$p' "$out" | grep -c '^- ') 条规则，其中自定义 $nc 条）"
 }
 
 build_sub() {
@@ -488,6 +503,28 @@ do_resync() {
 
 # ============ 服务 ============
 
+# 隧道的转发端口（SUB_PORT）写死在 unit 里，改了端口必须重写这个文件
+write_argo_service() {
+  cat > "$ARGO_SERVICE" <<EOF
+[Unit]
+Description=Cloudflare quick tunnel (Argo) for vmess-ws
+After=network-online.target sb-nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+TimeoutStartSec=120
+Restart=always
+RestartSec=5
+ExecStart=$CLOUDFLARED tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --metrics $ARGO_METRICS --url http://localhost:$SUB_PORT
+ExecStartPost=-$SELF resync
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 install_services() {
   local nginx_bin; nginx_bin=$(command -v nginx)
   cat > "$SB_SERVICE" <<EOF
@@ -527,24 +564,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  cat > "$ARGO_SERVICE" <<EOF
-[Unit]
-Description=Cloudflare quick tunnel (Argo) for vmess-ws
-After=network-online.target sb-nginx.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-TimeoutStartSec=120
-Restart=always
-RestartSec=5
-ExecStart=$CLOUDFLARED tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --metrics $ARGO_METRICS --url http://localhost:$SUB_PORT
-ExecStartPost=-$SELF resync
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  write_argo_service
 
   systemctl daemon-reload
   systemctl enable sing-box sb-nginx sb-argo >/dev/null 2>&1
@@ -611,7 +631,7 @@ show_sub() {
   echo "  $(h2_link)"
   [ -n "$ARGO_DOMAIN" ] && { echo; echo "  $(vmess_link)"; }
   echo
-  if command -v qrencode >/dev/null 2>&1; then
+  if [ -z "$NO_QR" ] && command -v qrencode >/dev/null 2>&1; then
     cyan '──────────── xtls-reality 二维码 ────────────'
     qrencode -t ANSIUTF8 "$(reality_link)"
   fi
@@ -700,25 +720,64 @@ regen_and_restart() {
   restart_all
 }
 
+valid_host() {
+  local h="$1"
+  [ "${#h}" -le 253 ] && printf '%s' "$h" | grep -qE '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+}
+
+do_set_sni() {
+  local host="$1"
+  check_root
+  valid_host "$host" || die "SNI 不是合法域名: ${host:-（空）}"
+  load_env   # load_env 会覆盖变量，所以必须在它之后再赋值
+  [ -n "$SUB_TOKEN" ] || die '尚未安装'
+  SNI="$host"; save_env
+  regen_and_restart && ok "SNI 已更新为 $SNI"
+}
+
+do_reroll_ports() {
+  check_root; load_env
+  [ -n "$SUB_TOKEN" ] || die '尚未安装'
+  assign_ports; save_env
+  write_argo_service; systemctl daemon-reload   # 隧道要指向新的订阅端口
+  regen_and_restart && ok "端口已重新随机，新的订阅端口: $SUB_PORT"
+}
+
 do_change_port() {
   check_root; load_env
   echo; cyan "当前 SNI: $SNI"
   echo -n "新 SNI（回车保持） > "; read -r s
   echo -n '是否重新随机所有端口？[y/N] '; read -r a
-  [ -n "$s" ] && SNI="$s"
-  case "$a" in y|Y) assign_ports ;; esac
-  save_env
-  regen_and_restart && { ok '已更新'; show_sub; }
+  [ -n "$s" ] && { do_set_sni "$s" || return; }
+  case "$a" in y|Y) do_reroll_ports || return ;; esac
+  show_sub
+}
+
+do_reset_keys() {
+  check_root; load_env
+  [ -n "$SUB_TOKEN" ] || die '尚未安装'
+  UUID=''; REALITY_PRIV=''; REALITY_PUB=''; SHORT_ID=''; SS_PASS=''; STLS_PASS=''
+  gen_keys; save_env
+  regen_and_restart && { fetch_argo_domain && save_env && build_sub >/dev/null; ok '密钥已重置'; }
 }
 
 do_regen_uuid() {
-  check_root; load_env
   yellow '将重新生成 UUID、Reality 密钥和各类密码，所有旧客户端都要重新导入订阅'
   echo -n '确认？[y/N] '; read -r a
   case "$a" in y|Y) ;; *) info '已取消'; return ;; esac
-  UUID=''; REALITY_PRIV=''; REALITY_PUB=''; SHORT_ID=''; SS_PASS=''; STLS_PASS=''
-  gen_keys; save_env
-  regen_and_restart && { fetch_argo_domain && save_env && build_sub >/dev/null; ok '密钥已重置'; show_sub; }
+  do_reset_keys && show_sub
+}
+
+do_rebuild() {
+  check_root; load_env
+  [ -n "$SUB_TOKEN" ] || die '尚未安装'
+  [ -f "$SB_DIR/config.tpl.yaml" ] || die '规则模板不存在，请先执行: vps rules'
+  build_sub
+}
+
+do_restart() {
+  check_root
+  restart_all && ok '已重启 sing-box / sb-nginx / sb-argo'
 }
 
 do_regen_token() {
@@ -833,7 +892,7 @@ menu() {
 
 # ============ 参数 ============
 
-ACTION=''
+ACTION=''; ACTION_ARG=''
 while [ $# -gt 0 ]; do
   case "$1" in
     -d|--domain)  SERVER_IP="$2"; IS_IPV6='false'; shift 2 ;;
@@ -841,7 +900,8 @@ while [ $# -gt 0 ]; do
     -n|--name)    NODE_NAME="$2"; shift 2 ;;
     -c|--cdn)     CDN_HOST="$2"; shift 2 ;;
     -m|--mirror)  GH_MIRRORS=("$2" "${GH_MIRRORS[@]}"); shift 2 ;;
-    install|sub|status|log|update|rules|resync|uninstall) ACTION="$1"; shift ;;
+    set-sni)      ACTION=set-sni; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    install|sub|status|log|update|rules|resync|uninstall|reroll-ports|reset-keys|reset-token|refresh-argo|rebuild|restart|bbr) ACTION="$1"; shift ;;
     -h|--help)
       cat <<EOF
 VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
@@ -857,6 +917,14 @@ VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
   update      更新 sing-box 内核
   rules       更新分流规则
   resync      刷新 Argo 域名并重新生成订阅
+  set-sni H   更换 SNI 为 H 并重新生成
+  reroll-ports  重新随机所有端口（订阅地址会变）
+  reset-keys  重置 UUID / 密钥 / 密码（旧客户端需重新导入）
+  reset-token 更换订阅地址 token
+  refresh-argo  重启 Argo 隧道并刷新域名
+  rebuild     只重新生成订阅文件（改自定义规则后用）
+  restart     重启 sing-box / sb-nginx / sb-argo
+  bbr         开启 BBR
   uninstall   卸载
 
 选项:
@@ -880,5 +948,13 @@ case "$ACTION" in
   rules)     do_update_rules ;;
   resync)    do_resync ;;
   uninstall) do_uninstall ;;
+  set-sni)       do_set_sni "$ACTION_ARG" ;;
+  reroll-ports)  do_reroll_ports ;;
+  reset-keys)    do_reset_keys ;;
+  reset-token)   do_regen_token ;;
+  refresh-argo)  do_refresh_argo ;;
+  rebuild)       do_rebuild ;;
+  restart)       do_restart ;;
+  bbr)           do_bbr ;;
   '')        menu ;;
 esac
