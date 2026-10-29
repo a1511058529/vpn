@@ -14,7 +14,7 @@
 # 安装后输入 vps 重新打开菜单
 #
 
-VERSION='2.1.0'
+VERSION='2.2.0'
 ORIG_ARGS=("$@")
 
 GH_USER='a1511058529'
@@ -35,6 +35,9 @@ ARGO_METRICS='127.0.0.1:20241'
 NGINX_SERVICE='/etc/systemd/system/sb-nginx.service'
 ARGO_SERVICE='/etc/systemd/system/sb-argo.service'
 CUSTOM_RULES="$SB_DIR/custom_rules.txt"
+PANEL_BIN="$SB_DIR/vps-panel"
+PANEL_JSON="$SB_DIR/panel.json"
+PANEL_SERVICE='/etc/systemd/system/sb-panel.service'
 
 CORE_REPO='SagerNet/sing-box'
 GH_MIRRORS=('' 'https://ghfast.top/' 'https://gh-proxy.com/' 'https://ghproxy.net/')
@@ -160,6 +163,8 @@ SUB_TOKEN='$SUB_TOKEN'
 CDN_HOST='$CDN_HOST'
 CDN_PORT='$CDN_PORT'
 ARGO_DOMAIN='$ARGO_DOMAIN'
+PANEL_PORT='$PANEL_PORT'
+PANEL_PATH='$PANEL_PATH'
 EOF
   chmod 600 "$ENVF"
 }
@@ -349,8 +354,27 @@ EOF
 
 # nginx：一边托管订阅，一边把 /<uuid>-vmess 的 websocket 反代给 sing-box，Argo 隧道指向它
 write_nginx_conf() {
-  local v6=''
+  local v6='' panel='' panelmap=''
   [ -f /proc/net/if_inet6 ] && v6="listen [::]:$SUB_PORT;"
+  if [ -n "$PANEL_PATH" ] && [ -n "$PANEL_PORT" ]; then
+    # 只有请求来自本机（即 cloudflared 隧道）时才采信 CF-Connecting-IP，直连用真实来源地址，
+    # 面板只认这里写入的 X-Client-IP，攻击者无法靠伪造请求头绕过登录限速
+    panelmap="map \$remote_addr \$client_ip {
+    127.0.0.1 \$http_cf_connecting_ip;
+    ::1       \$http_cf_connecting_ip;
+    default   \$remote_addr;
+  }"
+    # Host 必须用 $http_host（带端口）；$host 会丢掉端口，面板的 Origin 同源校验会把正常请求误拒
+    panel="location /$PANEL_PATH/ {
+      proxy_pass http://127.0.0.1:$PANEL_PORT;
+      proxy_http_version 1.1;
+      proxy_set_header Host \$http_host;
+      proxy_set_header X-Client-IP \$client_ip;
+      proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
+      proxy_read_timeout 300s;
+      client_max_body_size 2m;
+    }"
+  fi
   cat > "$NGINX_CONF" <<EOF
 user root;
 worker_processes 1;
@@ -360,6 +384,7 @@ events { worker_connections 1024; }
 http {
   default_type text/plain;
   access_log off;
+  $panelmap
   sendfile on;
   server {
     listen $SUB_PORT;
@@ -378,6 +403,7 @@ http {
       proxy_set_header Host \$host;
       proxy_redirect off;
     }
+    $panel
     location / { return 404; }
   }
 }
@@ -650,7 +676,7 @@ show_status() {
     echo '  内核    : 未安装'; cyan '═════════════════════════════'; echo; return
   fi
   local s
-  for s in sing-box sb-nginx sb-argo; do
+  for s in sing-box sb-nginx sb-argo $([ -f "$PANEL_SERVICE" ] && echo sb-panel); do
     systemctl is-active --quiet "$s" && green "  $s: 运行中" || red "  $s: 未运行"
   done
   echo "  服务器IP: ${SERVER_IP:-?}"
@@ -701,9 +727,12 @@ do_install() {
     warn 'Argo 域名获取失败，vmess-ws 节点暂缺；稍后菜单里选「刷新 Argo 域名」'
   fi
 
+  install_panel || warn '面板安装失败，不影响节点；稍后可执行: vps panel-install'
+
   echo
   green '部署完成'
   show_sub
+  [ -n "$PANEL_PATH" ] && [ -s "$PANEL_JSON" ] && do_panel
   echo '  常用命令：'
   echo '    vps                        打开菜单'
   echo '    systemctl status sing-box  查看节点服务'
@@ -780,6 +809,104 @@ do_restart() {
   restart_all && ok '已重启 sing-box / sb-nginx / sb-argo'
 }
 
+write_panel_service() {
+  cat > "$PANEL_SERVICE" <<EOF
+[Unit]
+Description=vps-panel (web admin for vps.sh)
+After=network-online.target sb-nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=TZ=Asia/Shanghai
+Environment=SB_DIR=$SB_DIR
+ExecStart=$PANEL_BIN serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# 安装或更新面板（幂等，每次都重新下载二进制）。失败只 warn 并返回 1，绝不能影响节点
+install_panel() {
+  local parch="${ARCH%-compatible}" tmp url
+  url="https://github.com/$GH_USER/$GH_REPO/releases/latest/download/vps-panel-linux-$parch"
+  mkdir -p "$SB_DIR"
+  tmp=$(mktemp "$SB_DIR/.panel.XXXXXX") || { warn '无法创建临时文件'; return 1; }
+  info '下载 vps-panel 面板'
+  if ! fetch "$url" "$tmp"; then
+    rm -f "$tmp"; warn '面板下载失败（节点不受影响，可稍后执行: vps panel-install）'; return 1
+  fi
+  chmod 755 "$tmp"
+  # 镜像可能返回 HTML 错误页，先确认它确实是能运行的面板再替换
+  if ! "$tmp" version >/dev/null 2>&1; then
+    rm -f "$tmp"; warn '下载到的面板文件无法运行（可能是镜像返回了错误页面）'; return 1
+  fi
+  mv -f "$tmp" "$PANEL_BIN"
+
+  if [ -z "$PANEL_PORT" ] || [ -z "$PANEL_PATH" ]; then
+    USED_PORTS="$PORT_REALITY $PORT_STLS $PORT_VMESS $PORT_H2 $SUB_PORT"
+    [ -n "$PANEL_PORT" ] || PANEL_PORT=$(pick_port)   # 只绑本机，不放行防火墙
+    [ -n "$PANEL_PATH" ] || PANEL_PATH=$(rand_hex 8)
+    save_env
+  fi
+  write_panel_service
+  if [ ! -s "$PANEL_JSON" ]; then
+    echo; yellow '面板初始账号（密码只显示这一次，忘记了用 vps panel-passwd 重置）：'
+    SB_DIR="$SB_DIR" "$PANEL_BIN" passwd || { warn '生成面板密码失败'; return 1; }
+    echo
+  fi
+  # 先备份 nginx 配置，新配置校验不过就还原，避免把订阅服务搞挂
+  local bak="$NGINX_CONF.bak" chk
+  cp -f "$NGINX_CONF" "$bak" 2>/dev/null
+  write_nginx_conf
+  if ! chk=$(nginx -t -c "$NGINX_CONF" 2>&1); then
+    warn 'nginx 配置校验未通过，已还原：'; echo "$chk" | tail -5
+    [ -f "$bak" ] && mv -f "$bak" "$NGINX_CONF"; return 1
+  fi
+  rm -f "$bak"
+  systemctl daemon-reload
+  systemctl enable sb-panel >/dev/null 2>&1
+  systemctl restart sb-nginx sb-panel
+  sleep 1
+  systemctl is-active --quiet sb-panel || { warn '面板服务启动失败，日志如下：'; journalctl -u sb-panel -n 15 --no-pager; return 1; }
+  ok '面板已安装并启动'
+}
+
+panel_urls() {
+  echo "  HTTP 入口  : http://$(addr):${SUB_PORT}/${PANEL_PATH}/   （明文传输）"
+  [ -n "$ARGO_DOMAIN" ] && echo "  HTTPS 入口 : https://${ARGO_DOMAIN}/${PANEL_PATH}/   （推荐；Argo 域名重启隧道后会变）"
+}
+
+do_panel() {
+  load_env
+  [ -n "$PANEL_PATH" ] || die '面板尚未安装，请执行: vps panel-install'
+  echo
+  cyan '════════════════ 面板 ════════════════'
+  panel_urls
+  echo '  用户名     : admin'
+  echo '  密码       : 安装时显示过一次；忘记了请执行 vps panel-passwd 重置'
+  cyan '═════════════════════════════════════════'
+  echo
+}
+
+do_panel_install() {
+  check_root; detect_arch; load_env
+  [ -n "$SUB_TOKEN" ] || die '尚未安装节点，请先执行安装'
+  install_panel && do_panel
+}
+
+do_panel_passwd() {
+  check_root
+  [ -x "$PANEL_BIN" ] || die '面板尚未安装，请执行: vps panel-install'
+  SB_DIR="$SB_DIR" "$PANEL_BIN" passwd || die '重置密码失败'
+  systemctl restart sb-panel 2>/dev/null   # 重启后所有已登录的会话立即失效
+  ok '密码已重置，所有已登录的会话已失效'
+}
+
 do_regen_token() {
   check_root; load_env
   local old="$SUB_TOKEN"
@@ -825,9 +952,9 @@ do_uninstall() {
   check_root
   echo; yellow '将卸载 sing-box、nginx 订阅服务和 Argo 隧道'
   echo -n "是否同时删除配置目录 $SB_DIR ？[y/N] "; read -r a
-  systemctl stop sing-box sb-nginx sb-argo 2>/dev/null
-  systemctl disable sing-box sb-nginx sb-argo 2>/dev/null
-  rm -f "$SB_SERVICE" "$NGINX_SERVICE" "$ARGO_SERVICE" "$SB_BIN" "$SHORTCUT"
+  systemctl stop sing-box sb-nginx sb-argo sb-panel 2>/dev/null
+  systemctl disable sing-box sb-nginx sb-argo sb-panel 2>/dev/null
+  rm -f "$SB_SERVICE" "$NGINX_SERVICE" "$ARGO_SERVICE" "$PANEL_SERVICE" "$SB_BIN" "$PANEL_BIN" "$SHORTCUT"
   systemctl daemon-reload
   case "$a" in
     y|Y) rm -rf "$SB_DIR"; ok "已删除 $SB_DIR" ;;
@@ -861,6 +988,8 @@ menu() {
     echo '  11) 查看日志'
     echo '  12) 开启 BBR'
     echo '  13) 卸载'
+    echo '  14) 面板信息 / 安装更新面板'
+    echo '  15) 重置面板密码'
     echo '   0) 退出'
     cyan '══════════════════════════════════════'
     echo -n '请选择 > '
@@ -884,6 +1013,9 @@ menu() {
       11) show_log ;;
       12) do_bbr ;;
       13) do_uninstall ;;
+      14) load_env; [ -n "$PANEL_PATH" ] && do_panel; echo -n '安装 / 更新面板？[y/N] '; read -r a
+          case "$a" in y|Y) do_panel_install ;; esac ;;
+      15) do_panel_passwd ;;
       0)  exit 0 ;;
       *)  warn '无效选择' ;;
     esac
@@ -901,7 +1033,7 @@ while [ $# -gt 0 ]; do
     -c|--cdn)     CDN_HOST="$2"; shift 2 ;;
     -m|--mirror)  GH_MIRRORS=("$2" "${GH_MIRRORS[@]}"); shift 2 ;;
     set-sni)      ACTION=set-sni; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
-    install|sub|status|log|update|rules|resync|uninstall|reroll-ports|reset-keys|reset-token|refresh-argo|rebuild|restart|bbr) ACTION="$1"; shift ;;
+    install|sub|status|log|update|rules|resync|uninstall|reroll-ports|reset-keys|reset-token|refresh-argo|rebuild|restart|bbr|panel|panel-install|panel-passwd) ACTION="$1"; shift ;;
     -h|--help)
       cat <<EOF
 VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
@@ -925,6 +1057,9 @@ VPS 一键订阅脚本 v$VERSION —— 一次生成 4 个节点：
   rebuild     只重新生成订阅文件（改自定义规则后用）
   restart     重启 sing-box / sb-nginx / sb-argo
   bbr         开启 BBR
+  panel       显示 Web 面板地址
+  panel-install 安装或更新 Web 面板（已装节点的老机器用它补装）
+  panel-passwd  重置面板密码
   uninstall   卸载
 
 选项:
@@ -956,5 +1091,8 @@ case "$ACTION" in
   rebuild)       do_rebuild ;;
   restart)       do_restart ;;
   bbr)           do_bbr ;;
+  panel)         do_panel ;;
+  panel-install) do_panel_install ;;
+  panel-passwd)  do_panel_passwd ;;
   '')        menu ;;
 esac
