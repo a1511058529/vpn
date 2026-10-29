@@ -15,6 +15,8 @@ Hysteria2 和 AnyTLS 用自签证书，客户端靠证书 SHA256 指纹锁定，
 
 服务端还做了几件事：按服务器的 IP 栈设置 DNS 偏好（坏掉的 IPv6 不会拖慢访问）、sing-box 自带 NTP 校时（Reality 对时间敏感）、流量嗅探，以及可选的 **AI 走 WARP**：ChatGPT / Claude / Gemini 等 AI 流量从 Cloudflare WARP 出去，避开机房 IP 被拦。安装时自动向 Cloudflare 注册免费 WARP 账户，注册失败就自动关掉，不影响节点；`vps warp on|off` 随时开关。
 
+客户端判断国内外要用的地理数据（GeoIP / GeoSite）由服务器下载好，经订阅地址的 `geo/` 路径提供，电脑不用去连国内经常打不开的 GitHub。`vps rules` 会同时更新规则和地理数据。
+
 > **装完一定要去云厂商控制台放行端口。** 脚本只能开系统里的 ufw / firewalld，腾讯云、阿里云、甲骨文等的「安全组」默认只放 22/80/443，不放行的话节点全部连不上（只有走 Argo 的 vmess-ws 能用）。需要放行的端口在安装结束和 `vps sub` 时会打印出来：几个 TCP 端口 + Hysteria2 的 UDP 端口。
 
 分流规则在 `config.tpl.yaml`（约 1900 条）：国内直连、国外走代理，海外 AI 服务单独一个 `🤖 AI` 分组（可单独选节点），Cloudflare 上的国内站直连、国外站走 `🌩️ Cloudflare` 分组。没被规则列出的国外网站由最后的「🐟 漏网之鱼」兜底走代理。
@@ -60,7 +62,7 @@ proxy-providers:
 ## 菜单
 
 ```
- 1) 安装 / 重装                  8) 更新分流规则
+ 1) 安装 / 重装                  8) 更新分流规则和地理数据
  2) 查看订阅地址和节点           9) 启动 / 停止 / 重启
  3) 更换 SNI / 随机端口         10) 查看状态
  4) 重置 UUID 和 Reality 密钥   11) 查看日志
