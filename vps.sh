@@ -40,9 +40,6 @@ PANEL_BIN="$SB_DIR/vps-panel"
 PANEL_JSON="$SB_DIR/panel.json"
 PANEL_SERVICE='/etc/systemd/system/sb-panel.service'
 CERT_DIR="$SB_DIR/cert"
-GEO_DIR="$SB_DIR/geo"
-GEO_FILES='geoip.metadb geosite.dat country.mmdb'
-GEO_REPO='MetaCubeX/meta-rules-dat'
 
 CORE_REPO='SagerNet/sing-box'
 GH_MIRRORS=('' 'https://ghfast.top/' 'https://gh-proxy.com/' 'https://ghproxy.net/')
@@ -550,7 +547,6 @@ http {
     server_name _;
     root $WWW;
     location /$SUB_TOKEN/ { autoindex off; }
-    location /$SUB_TOKEN/geo/ { alias $GEO_DIR/; default_type application/octet-stream; }
     location /$UUID-vmess {
       if (\$http_upgrade != "websocket") { return 404; }
       proxy_pass http://127.0.0.1:$PORT_VMESS;
@@ -644,9 +640,6 @@ write_clash_full() {
       -e "s|__CTRL_LISTEN__|127.0.0.1:9090|g" \
       "$tpl" > "$WWW/$SUB_TOKEN/clash"
   local out="$WWW/$SUB_TOKEN/clash" nc=0
-  if geo_ready; then
-    sed -i "s#https://cdn.jsdelivr.net/gh/$GEO_REPO@release/#http://$(addr):${SUB_PORT}/${SUB_TOKEN}/geo/#g" "$out"
-  fi
   if [ -s "$CUSTOM_RULES" ]; then
     awk -v f="$CUSTOM_RULES" '
       { print }
@@ -661,30 +654,6 @@ write_clash_full() {
     nc=$(grep -cvE '^[[:space:]]*(#|$)' "$CUSTOM_RULES")
   fi
   ok "完整配置已生成（$(sed -n '/^rules:/,$p' "$out" | grep -c '^- ') 条规则，其中自定义 $nc 条）"
-}
-
-# 客户端判断国内外要用的地理数据，由服务器下好、经订阅地址提供：
-# 电脑不用去连国内经常打不开的 GitHub，下载失败时客户端退回 jsDelivr
-download_geo() {
-  mkdir -p "$GEO_DIR"
-  local f tmp n=0
-  info '下载地理数据（GeoIP / GeoSite），供客户端从本服务器获取'
-  for f in $GEO_FILES; do
-    tmp="$GEO_DIR/.$f.tmp"
-    if fetch "https://github.com/$GEO_REPO/releases/download/latest/$f" "$tmp" \
-       || fetch "https://cdn.jsdelivr.net/gh/$GEO_REPO@release/$f" "$tmp"; then
-      # 镜像可能返回很小的 HTML 错误页，太小的不要
-      if [ "$(wc -c < "$tmp")" -gt 500000 ]; then mv -f "$tmp" "$GEO_DIR/$f"; chmod 644 "$GEO_DIR/$f"; n=$((n+1)); continue; fi
-    fi
-    rm -f "$tmp"; warn "地理数据 $f 下载失败（保留旧文件；没有的话客户端会改从 jsDelivr 下载）"
-  done
-  [ "$n" -gt 0 ] && ok "地理数据已更新（$n 个文件）"
-  return 0
-}
-
-geo_ready() {
-  local f
-  for f in $GEO_FILES; do [ -s "$GEO_DIR/$f" ] || return 1; done
 }
 
 build_sub() {
@@ -932,7 +901,6 @@ do_install() {
 
   install_core
   install_cloudflared
-  download_geo
   ensure_extras
   save_env
   write_and_check || die '配置有误，已中止'
@@ -1168,10 +1136,7 @@ do_update_rules() {
   check_root; load_env
   [ -n "$SUB_TOKEN" ] || die '尚未安装'
   rm -f "$SB_DIR/config.tpl.yaml"
-  download_geo
-  # 老版本的 nginx 配置里没有 geo/ 路径，补上
-  write_nginx_conf; systemctl restart sb-nginx
-  write_clash_full && ok '分流规则和地理数据已更新（/clash 端点）'
+  write_clash_full && ok '分流规则已更新（/clash 端点）'
 }
 
 do_bbr() {
@@ -1222,7 +1187,7 @@ menu() {
     echo '   5) 更换订阅地址（旧地址作废）'
     echo '   6) 刷新 Argo 域名（vmess-ws）'
     echo '   7) 更新 sing-box 内核'
-    echo '   8) 更新分流规则和地理数据'
+    echo '   8) 更新分流规则'
     echo '   9) 启动 / 停止 / 重启'
     echo '  10) 查看状态'
     echo '  11) 查看日志'
@@ -1290,7 +1255,7 @@ VPS 一键订阅脚本 v$VERSION —— 一次生成 6 个节点：
   status      查看状态
   log         查看日志
   update      更新 sing-box 内核
-  rules       更新分流规则和地理数据
+  rules       更新分流规则
   resync      刷新 Argo 域名并重新生成订阅
   set-sni H   更换 SNI 为 H 并重新生成
   reroll-ports  重新随机所有端口（订阅地址会变）
