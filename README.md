@@ -13,7 +13,7 @@
 
 Hysteria2 和 AnyTLS 用自签证书，客户端靠证书 SHA256 指纹锁定，不怕中间人。
 
-服务端还做了几件事：按服务器的 IP 栈设置 DNS 偏好（坏掉的 IPv6 不会拖慢访问）、sing-box 自带 NTP 校时（Reality 对时间敏感）、流量嗅探，以及可选的 **AI 走 WARP**：ChatGPT / Claude / Gemini 等 AI 流量从 Cloudflare WARP 出去，避开机房 IP 被拦。安装时自动向 Cloudflare 注册免费 WARP 账户，注册失败就自动关掉，不影响节点；`vps warp on|off` 随时开关。
+服务端还做了几件事：按服务器的 IP 栈设置 DNS 偏好（坏掉的 IPv6 不会拖慢访问）、sing-box 自带 NTP 校时（Reality 对时间敏感）、流量嗅探。
 
 > **装完一定要去云厂商控制台放行端口。** 脚本只能开系统里的 ufw / firewalld，腾讯云、阿里云、甲骨文等的「安全组」默认只放 22/80/443，不放行的话节点全部连不上（只有走 Argo 的 vmess-ws 能用）。需要放行的端口在安装结束和 `vps sub` 时会打印出来：几个 TCP 端口 + Hysteria2 的 UDP 端口。
 
@@ -69,7 +69,6 @@ proxy-providers:
  6) 刷新 Argo 域名（vmess-ws）  13) 卸载
  7) 更新 sing-box 内核          14) 面板信息 / 安装更新面板
                                 15) 重置面板密码
-                                16) AI 走 WARP 出口：开 / 关
 ```
 
 ## Web 面板
@@ -121,7 +120,6 @@ vps panel-passwd   # 重置密码（所有已登录的会话立即失效）
 vps set-sni <域名>   vps reroll-ports   vps reset-keys   vps reset-token
 vps refresh-argo     vps rebuild        vps restart      vps bbr
 vps rules            vps update         vps panel        vps panel-install   vps panel-passwd
-vps warp on|off
 ```
 
 ## 关于 vmess-ws 和 Argo

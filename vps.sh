@@ -2,7 +2,6 @@
 #
 # VPS 一键部署脚本 —— 把 VPS 变成你自己的订阅（一次生成 6 个节点）
 #   xtls-reality / ShadowTLS / h2-reality / vmess-ws(Cloudflare Argo) / Hysteria2 / AnyTLS
-#   服务端可选让 AI 流量（ChatGPT / Claude / Gemini 等）经 Cloudflare WARP 出去
 #
 # 用法: bash <(wget -qO- https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh)
 #   或: bash <(curl -fsSL https://raw.githubusercontent.com/a1511058529/vpn/main/vps.sh)
@@ -49,8 +48,6 @@ DEFAULT_SNI='addons.mozilla.org'
 DEFAULT_CDN_HOST='skk.moe'
 # Hysteria2 / AnyTLS 用自签证书，客户端靠证书指纹校验；CN 只是个外观
 CERT_CN='www.bing.com'
-# 服务端走 WARP 的 AI 域名（客户端的 🤖 AI 分组决定走哪个节点，这里决定节点从哪个出口出去）
-WARP_AI_DOMAINS='"anthropic.com","claude.ai","claude.com","claudeusercontent.com","clau.de","openai.com","chatgpt.com","oaistatic.com","oaiusercontent.com","sora.com","ai.com","gemini.google.com","aistudio.google.com","generativelanguage.googleapis.com","alkalimakersuite-pa.clients6.google.com","notebooklm.google.com","grok.com","x.ai","perplexity.ai"'
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -95,9 +92,7 @@ pkg_install() {
 
 check_deps() {
   local miss=()
-  # curl 和 jq 都装上：注册 WARP 要用（下载本身有 wget 也行）
   command -v curl    >/dev/null 2>&1 || miss+=(curl)
-  command -v jq      >/dev/null 2>&1 || miss+=(jq)
   command -v tar     >/dev/null 2>&1 || miss+=(tar)
   command -v openssl >/dev/null 2>&1 || miss+=(openssl)
   command -v nginx   >/dev/null 2>&1 || miss+=(nginx)
@@ -177,11 +172,6 @@ HY2_PASS='$HY2_PASS'
 ANYTLS_PASS='$ANYTLS_PASS'
 CERT_FP='$CERT_FP'
 DNS_STRATEGY='$DNS_STRATEGY'
-WARP_AI='$WARP_AI'
-WARP_PRIV='$WARP_PRIV'
-WARP_PEER_PUB='$WARP_PEER_PUB'
-WARP_V6='$WARP_V6'
-WARP_RESERVED='$WARP_RESERVED'
 SUB_PORT='$SUB_PORT'
 SUB_TOKEN='$SUB_TOKEN'
 CDN_HOST='$CDN_HOST'
@@ -330,69 +320,17 @@ gen_cert() {
   [ -n "$CERT_FP" ] || die '读取证书指纹失败'
 }
 
-# 直接向 Cloudflare 注册一个免费 WARP 账户（不依赖第三方脚本，也不用别人共享的账户）
-warp_register() {
-  command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { warn '缺少 curl 或 jq，无法注册 WARP'; return 1; }
-  local kp priv pub resp v6 cid peer res
-  kp=$("$SB_BIN" generate wg-keypair 2>/dev/null) || return 1
-  priv=$(echo "$kp" | awk '/PrivateKey/{print $2}')
-  pub=$(echo  "$kp" | awk '/PublicKey/{print $2}')
-  [ -n "$priv" ] && [ -n "$pub" ] || return 1
-  resp=$(curl -fsS --connect-timeout 10 --max-time 20 -X POST 'https://api.cloudflareclient.com/v0a2158/reg' \
-    -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.10-2158' -H 'Content-Type: application/json' \
-    -d "{\"key\":\"$pub\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"serial_number\":\"\",\"locale\":\"en_US\"}" 2>/dev/null) || return 1
-  v6=$(printf '%s' "$resp"   | jq -r '.config.interface.addresses.v6 // empty' 2>/dev/null)
-  cid=$(printf '%s' "$resp"  | jq -r '.config.client_id // empty' 2>/dev/null)
-  peer=$(printf '%s' "$resp" | jq -r '.config.peers[0].public_key // empty' 2>/dev/null)
-  [ -n "$v6" ] && [ -n "$cid" ] || return 1
-  # client_id 解码后的 3 个字节就是 wireguard 的 reserved 字段
-  res=$(printf '%s' "$cid" | base64 -d 2>/dev/null | od -An -tu1 | awk '{$1=$1; gsub(/ /, ","); print}')
-  case "$res" in *,*,*) ;; *) return 1 ;; esac
-  WARP_PRIV="$priv"; WARP_V6="$v6"; WARP_RESERVED="$res"
-  WARP_PEER_PUB="${peer:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}"
-}
-
-# 补齐新版本需要、老安装里没有的东西：端口、密码、证书、DNS 偏好、WARP
+# 补齐新版本需要、老安装里没有的东西：端口、密码、证书、DNS 偏好
 ensure_extras() {
   ensure_ports
   [ -n "$DNS_STRATEGY" ] || detect_stack
   gen_keys
   gen_cert
-  [ -n "$WARP_AI" ] || WARP_AI='on'
-  if [ "$WARP_AI" = 'on' ] && [ -z "$WARP_PRIV" ]; then
-    info '注册 Cloudflare WARP（AI 流量从 WARP 出去，避开机房 IP 被拦）'
-    if warp_register; then ok 'WARP 已注册'
-    # 保持 on，只是没有账户：配置里不会带 WARP，下次安装 / vps warp on 自动重试
-    else warn 'WARP 注册失败，AI 流量暂走 VPS 自己的出口；下次安装或执行 vps warp on 会自动重试'; fi
-  fi
 }
 
 # 六个入站：xtls-reality / ShadowTLS / vmess-ws(仅本机，经 nginx+Argo) / h2-reality / Hysteria2 / AnyTLS
 write_singbox_config() {
   mkdir -p "$SB_DIR"
-  local warp_ep='' warp_rule='' peer='162.159.192.1'
-  if [ "$WARP_AI" = 'on' ] && [ -n "$WARP_PRIV" ]; then
-    [ "$DNS_STRATEGY" = 'ipv6_only' ] && peer='2606:4700:d0::a29f:c001'
-    warp_ep=',
-  "endpoints": [
-    {
-      "type": "wireguard",
-      "tag": "warp",
-      "mtu": 1280,
-      "address": ["172.16.0.2/32", "'"$WARP_V6"'/128"],
-      "private_key": "'"$WARP_PRIV"'",
-      "peers": [{
-        "address": "'"$peer"'",
-        "port": 2408,
-        "public_key": "'"$WARP_PEER_PUB"'",
-        "allowed_ips": ["0.0.0.0/0", "::/0"],
-        "reserved": ['"$WARP_RESERVED"']
-      }]
-    }
-  ]'
-    warp_rule=',
-      { "domain_suffix": ['"$WARP_AI_DOMAINS"'], "domain_keyword": ["openai"], "outbound": "warp" }'
-  fi
   cat > "$SB_CONF" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -500,11 +438,11 @@ write_singbox_config() {
   ],
   "outbounds": [
     { "type": "direct", "tag": "direct" }
-  ]${warp_ep},
+  ],
   "route": {
     "default_domain_resolver": "local",
     "rules": [
-      { "action": "sniff" }${warp_rule}
+      { "action": "sniff" }
     ],
     "final": "direct"
   }
@@ -810,13 +748,7 @@ open_firewall() {
   fi
 }
 
-# 写配置并校验；带 WARP 校验不过（比如内核太老）就关掉 WARP 再试一次，不让它拖累节点
 write_and_check() {
-  write_singbox_config
-  validate && return 0
-  [ "$WARP_AI" = 'on' ] || return 1
-  warn '带 WARP 的配置未通过校验，已关闭 WARP（AI 改走 VPS 自己的出口）后重试'
-  WARP_AI='off'; save_env
   write_singbox_config
   validate
 }
@@ -904,8 +836,7 @@ show_status() {
   echo "  服务器IP: ${SERVER_IP:-?}"
   echo "  reality : ${PORT_REALITY:-?}    shadowtls: ${PORT_STLS:-?}    h2-reality: ${PORT_H2:-?}"
   echo "  hysteria2: ${PORT_HY2:-?}/udp    anytls: ${PORT_ANYTLS:-?}"
-  local w="${WARP_AI:-off}"; [ "$w" = 'on' ] && [ -z "$WARP_PRIV" ] && w='on（未注册成功，暂走 VPS 出口）'
-  echo "  DNS 偏好: ${DNS_STRATEGY:-?}    AI 走 WARP: $w"
+  echo "  DNS 偏好: ${DNS_STRATEGY:-?}"
   echo "  vmess-ws: ${ARGO_DOMAIN:-（尚无 Argo 域名）}"
   echo "  订阅端口: ${SUB_PORT:-?}    伪装域名: ${SNI:-?}"
   cyan '═════════════════════════════'
@@ -1151,23 +1082,6 @@ do_update_core() {
   validate && restart_all && ok '内核已更新并重启'
 }
 
-# AI 流量是否经 WARP 出去（vps warp on|off）
-do_warp() {
-  check_root; load_env
-  [ -n "$SUB_TOKEN" ] || die '尚未安装'
-  case "$1" in
-    on)  WARP_AI='on'
-         command -v curl >/dev/null 2>&1 || pkg_install curl
-         command -v jq   >/dev/null 2>&1 || pkg_install jq ;;
-    off) WARP_AI='off' ;;
-    *)   die '用法: vps warp on|off' ;;
-  esac
-  regen_and_restart || return 1
-  if [ "$WARP_AI" = 'on' ] && [ -n "$WARP_PRIV" ]; then ok 'AI 流量已改走 WARP 出口'
-  elif [ "$WARP_AI" = 'on' ]; then warn 'WARP 仍未注册成功，AI 流量暂走 VPS 自己的出口'
-  else ok 'AI 流量走 VPS 自己的出口'; fi
-}
-
 do_update_rules() {
   check_root; load_env
   [ -n "$SUB_TOKEN" ] || die '尚未安装'
@@ -1231,7 +1145,6 @@ menu() {
     echo '  13) 卸载'
     echo '  14) 面板信息 / 安装更新面板'
     echo '  15) 重置面板密码'
-    echo '  16) AI 走 WARP 出口：开 / 关'
     echo '   0) 退出'
     cyan '══════════════════════════════════════'
     echo -n '请选择 > '
@@ -1258,8 +1171,6 @@ menu() {
       14) load_env; [ -n "$PANEL_PATH" ] && do_panel; echo -n '安装 / 更新面板？[y/N] '; read -r a
           case "$a" in y|Y) do_panel_install ;; esac ;;
       15) do_panel_passwd ;;
-      16) load_env; echo "当前: ${WARP_AI:-off}"; echo -n '1)开启 2)关闭 > '; read -r s
-          case "$s" in 1) do_warp on ;; 2) do_warp off ;; esac ;;
       0)  exit 0 ;;
       *)  warn '无效选择' ;;
     esac
@@ -1276,7 +1187,7 @@ while [ $# -gt 0 ]; do
     -n|--name)    NODE_NAME="$2"; shift 2 ;;
     -c|--cdn)     CDN_HOST="$2"; shift 2 ;;
     -m|--mirror)  GH_MIRRORS=("$2" "${GH_MIRRORS[@]}"); shift 2 ;;
-    set-sni|warp) ACTION="$1"; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    set-sni)      ACTION=set-sni; ACTION_ARG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     install|sub|status|log|update|rules|resync|uninstall|reroll-ports|reset-keys|reset-token|refresh-argo|rebuild|restart|bbr|panel|panel-install|panel-passwd) ACTION="$1"; shift ;;
     -h|--help)
       cat <<EOF
@@ -1304,7 +1215,6 @@ VPS 一键订阅脚本 v$VERSION —— 一次生成 6 个节点：
   panel       显示 Web 面板地址
   panel-install 安装或更新 Web 面板（已装节点的老机器用它补装）
   panel-passwd  重置面板密码
-  warp on|off AI 流量（ChatGPT / Claude / Gemini 等）是否经 Cloudflare WARP 出去
   uninstall   卸载
 
 选项:
@@ -1339,6 +1249,5 @@ case "$ACTION" in
   panel)         do_panel ;;
   panel-install) do_panel_install ;;
   panel-passwd)  do_panel_passwd ;;
-  warp)          do_warp "$ACTION_ARG" ;;
   '')        check_root; menu ;;   # 先提权再显示菜单，免得选完又因提权重跑一遍菜单
 esac
