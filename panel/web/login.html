@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · VPS 面板</title>
+<link rel="stylesheet" href="{{.Base}}static/style.css">
+</head>
+<body class="login">
+<form class="card login-card" method="post" action="{{.Base}}login" autocomplete="on">
+  <h1>VPS 面板</h1>
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <label>用户名<input name="username" value="admin" autocomplete="username" required></label>
+  <label>密码<input name="password" type="password" autocomplete="current-password" autofocus required></label>
+  <button type="submit" class="primary">登录</button>
+  <p class="muted">忘记密码：在服务器上执行 <code>vps panel-passwd</code></p>
+</form>
+</body>
+</html>

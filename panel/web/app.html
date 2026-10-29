@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="base" content="{{.Base}}">
+<title>VPS 面板</title>
+<link rel="stylesheet" href="{{.Base}}static/style.css">
+</head>
+<body>
+<header>
+  <h1>VPS 面板</h1>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">概览</button>
+    <button data-tab="ops">运维</button>
+    <button data-tab="rules">规则</button>
+    <button data-tab="logs">日志</button>
+  </nav>
+  <form method="post" action="{{.Base}}logout"><button type="submit" class="ghost">退出</button></form>
+</header>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="tab-overview"></section>
+
+  <section id="tab-ops" hidden></section>
+
+  <section id="tab-rules" hidden>
+    <div class="card">
+      <h2>自定义规则</h2>
+      <p class="muted">一行一条，写在最前面，优先级最高，只对完整 Clash 配置（<code>/clash</code>）生效。格式：<code>类型,值,策略[,no-resolve]</code>，例如 <code>DOMAIN-SUFFIX,example.com,DIRECT</code>。<code>#</code> 开头是注释。</p>
+      <p class="muted" id="groups"></p>
+      <textarea id="rules-text" spellcheck="false" rows="14"></textarea>
+      <ul id="rules-errors" class="err-list" hidden></ul>
+      <div class="row">
+        <button id="rules-save" class="primary">保存并生效</button>
+        <span class="muted" id="rules-count"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>规则模板</h2>
+      <p class="muted">模板来自 GitHub 仓库。「恢复默认模板」会重新下载并覆盖本机模板；上面的自定义规则不受影响。</p>
+      <button id="tpl-restore" class="danger">从 GitHub 恢复默认模板</button>
+    </div>
+  </section>
+
+  <section id="tab-logs" hidden>
+    <div class="card">
+      <div class="row">
+        <select id="log-unit">
+          <option>sing-box</option><option>sb-nginx</option><option>sb-argo</option><option>sb-panel</option>
+        </select>
+        <select id="log-n"><option>100</option><option>300</option><option>1000</option></select>
+        <button id="log-refresh">刷新</button>
+      </div>
+      <pre id="log-out" class="out"></pre>
+    </div>
+  </section>
+
+  <div id="job" class="card" hidden>
+    <h2>任务输出 <span id="job-state" class="pill"></span></h2>
+    <pre id="job-out" class="out"></pre>
+  </div>
+</main>
+
+<footer class="muted">版本 {{.Version}} · 页面上的时间均为北京时间</footer>
+<script src="{{.Base}}static/app.js"></script>
+</body>
+</html>
